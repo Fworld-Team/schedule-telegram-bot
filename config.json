@@ -1,0 +1,10 @@
+{
+  "bot_title": "Расписание РГАУ-МСХА",
+  "schedules_directory": "media/schedules",
+  "maps_directory": "media/maps",
+  "token_file": "token.txt",
+  "data_directory": "data",
+  "admin_user_ids": [],
+  "academic_year_start": "09-01",
+  "utc_offset_hours": 3
+}
