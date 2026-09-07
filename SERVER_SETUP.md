@@ -158,7 +158,9 @@ MONITORING_ENABLED=true
 
 `Server status` проверяет сервер два раза в час, также доступен ручной запуск.
 Отсутствие настройки при ручной проверке отображается ошибкой, а не ложным
-зелёным статусом. После включения мониторинга можно добавить в README:
+зелёным статусом. Сейчас в README показан серый индикатор «Сервер: ещё не
+подключён» — это заглушка, а не результат проверки. После включения мониторинга
+и первой успешной проверки замените строку с `docs/server-status.svg` в README на:
 
 ```markdown
 [![Server status](https://github.com/Fwor1d/schedule-telegram-bot/actions/workflows/bot-status.yml/badge.svg?branch=main)](https://github.com/Fwor1d/schedule-telegram-bot/actions/workflows/bot-status.yml)

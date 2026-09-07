@@ -1,12 +1,15 @@
 # Telegram-бот расписания
 
 [![CI](https://github.com/Fwor1d/schedule-telegram-bot/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Fwor1d/schedule-telegram-bot/actions/workflows/ci.yml)
+[![Сервер: ещё не подключён](docs/server-status.svg)](SERVER_SETUP.md)
 
 Код проверяется при изменении `main` и в pull request: тесты Python 3.12,
 конфигурация, сборка Docker и запуск проверки данных внутри образа.
 Dependabot предлагает обновления библиотек и GitHub Actions.
 
-**Подключение сервера пока не настроено.** Деплой включается переменной
+**Сервер ещё не подключён.** Серый индикатор — заглушка: состояние сервера
+пока не проверяется. После подключения его нужно заменить на badge `Server status`
+по инструкции ниже. Деплой включается переменной
 `DEPLOY_ENABLED=true`, мониторинг — `MONITORING_ENABLED=true`, только после
 добавления SSH-доступа и выбора постоянного Docker volume.
 Пошаговая настройка: [SERVER_SETUP.md](SERVER_SETUP.md).
