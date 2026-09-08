@@ -11,15 +11,15 @@ data/
 secrets/*
 !secrets/README.md
 *.sqlite
+*.sqlite3
 *.sqlite-shm
 *.sqlite-wal
-*.sqlite3
 *.sqlite3-shm
 *.sqlite3-wal
 *.log
-*.zip
 *.pem
 *.key
+*.zip
 .DS_Store
 backup*/
 .deploy.lock

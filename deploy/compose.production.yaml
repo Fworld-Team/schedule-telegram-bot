@@ -1,6 +1,22 @@
-# Apply together with the root compose.yaml. Refuse to create an empty volume
-# accidentally: select an existing, backed-up volume in the server .env.
+# Production keeps state and network infrastructure outside each code release.
+services:
+  bot:
+    environment:
+      BOT_PROXY_URL: http://172.30.80.1:1081
+      HEALTHCHECK_TELEGRAM: "1"
+    healthcheck:
+      interval: 5m
+      timeout: 15s
+      retries: 2
+      start_period: 30s
+      start_interval: 5s
+
 volumes:
   bot_data:
     external: true
-    name: "${BOT_DATA_VOLUME:?Set BOT_DATA_VOLUME to the existing server volume}"
+    name: "${BOT_DATA_VOLUME:?Set BOT_DATA_VOLUME in the server env file}"
+
+networks:
+  bots-egress:
+    external: true
+    name: bots-egress

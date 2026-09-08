@@ -1,5 +1,8 @@
+name: fworld-bot
+
 services:
   bot:
+    image: "schedule-telegram-bot:${DEPLOY_SHA:-local}"
     build:
       context: .
     restart: unless-stopped
@@ -8,12 +11,18 @@ services:
       ADMIN_USER_IDS: "${ADMIN_USER_IDS:?Set ADMIN_USER_IDS in .env}"
       BOT_DATA_DIR: /data
       TELEGRAM_BOT_TOKEN_FILE: /run/secrets/telegram_bot_token
+      BOT_PROXY_URL: http://172.30.80.1:1081
       PYTHONDONTWRITEBYTECODE: "1"
       PYTHONUNBUFFERED: "1"
     secrets:
       - telegram_bot_token
     volumes:
       - bot_data:/data
+    networks:
+      - bots-egress
+    mem_limit: 512m
+    cpus: 0.5
+    pids_limit: 128
     read_only: true
     tmpfs:
       - /tmp:size=64m,mode=1777
@@ -29,14 +38,20 @@ services:
       retries: 3
       start_period: 20s
     logging:
-      driver: json-file
+      driver: local
       options:
         max-size: "10m"
         max-file: "3"
 
 secrets:
   telegram_bot_token:
-    file: ./secrets/telegram_bot_token.txt
+    file: "${BOT_TOKEN_FILE:-./secrets/telegram_bot_token.txt}"
 
 volumes:
   bot_data:
+    name: fworld_bot_data
+
+networks:
+  bots-egress:
+    external: true
+    name: bots-egress
