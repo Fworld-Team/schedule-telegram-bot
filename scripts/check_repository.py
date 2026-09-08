@@ -1,4 +1,4 @@
-"""Fail CI on tracked runtime data or likely credentials; never print values."""
+"""Fail CI on tracked runtime data or recognizable credentials."""
 from pathlib import Path
 import re
 import subprocess
@@ -10,11 +10,11 @@ PRIVATE_KEY = re.compile(rb"-----BEGIN (?:OPENSSH |RSA |EC |DSA )?PRIVATE KEY---
 
 
 def main() -> int:
-    result = subprocess.run(
+    tracked = subprocess.run(
         ["git", "ls-files", "-z"], cwd=ROOT, check=True, capture_output=True
-    )
+    ).stdout.split(b"\0")
     errors = []
-    for raw in result.stdout.split(b"\0"):
+    for raw in tracked:
         if not raw:
             continue
         name = raw.decode("utf-8")
@@ -22,7 +22,7 @@ def main() -> int:
         forbidden = (
             path.name == "token.txt"
             or (path.name.startswith(".env") and path.name != ".env.example")
-            or any(p.startswith(".venv") or p in {"data", "__pycache__"} for p in path.parts)
+            or any(part.startswith(".venv") or part in {"data", "__pycache__"} for part in path.parts)
             or (path.parts[0] == "secrets" and name != "secrets/README.md")
             or path.suffix in {".sqlite", ".sqlite3", ".pem", ".key", ".zip"}
             or path.name == ".DS_Store"
@@ -35,7 +35,7 @@ def main() -> int:
     if errors:
         print("\n".join(errors), file=sys.stderr)
         return 1
-    print("Tracked files: no runtime data or recognizable credentials found.")
+    print("Tracked files contain no runtime data or recognizable credentials.")
     return 0
 
 

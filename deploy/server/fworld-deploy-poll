@@ -1,0 +1,73 @@
+#!/usr/bin/env bash
+# Pull only the CI-promoted deploy branch using a repository read-only key.
+set -euo pipefail
+exec 9>/var/lock/fworld-deploy.lock
+flock -w 50 9
+
+repository=/var/lib/fworld-deploy/repository
+releases=/srv/bots/fworld-releases
+env_file=/etc/fworld-bot/deploy.env
+ssh_command='ssh -i /etc/fworld-deploy/github_readonly -o UserKnownHostsFile=/etc/fworld-deploy/github_known_hosts -o StrictHostKeyChecking=yes -o BatchMode=yes -o IdentitiesOnly=yes'
+export GIT_SSH_COMMAND="$ssh_command"
+
+if ! git -C "$repository" fetch --no-tags --prune origin deploy; then
+  # Before the first promotion the deploy branch intentionally does not exist.
+  [[ ! -f /var/lib/fworld-deploy/current-sha ]] && exit 0
+  exit 1
+fi
+sha="$(git -C "$repository" rev-parse --verify origin/deploy^{commit})"
+[[ "$sha" =~ ^[0-9a-f]{40}$ ]] || exit 2
+if [[ -f /var/lib/fworld-deploy/current-sha ]] && [[ "$(cat /var/lib/fworld-deploy/current-sha)" == "$sha" ]]; then
+  exit 0
+fi
+
+release="$releases/$sha"
+mkdir -p "$releases"
+if [[ ! -d "$release" ]]; then
+  staging="$(mktemp -d "$releases/.staging-$sha.XXXXXX")"
+  trap 'rm -rf -- "$staging"' EXIT
+  git -C "$repository" archive "$sha" \
+    Dockerfile compose.yaml config.json requirements.txt schedule_bot media \
+    deploy/compose.production.yaml | tar -x -C "$staging"
+  test -f "$staging/Dockerfile"
+  test -f "$staging/compose.yaml"
+  test -f "$staging/deploy/compose.production.yaml"
+  test -d "$staging/schedule_bot"
+  chown -R root:root "$staging"
+  chmod -R go-w "$staging"
+  mv -- "$staging" "$release"
+  trap - EXIT
+fi
+
+test -s "$env_file"
+test -s /etc/fworld-bot/telegram_bot_token.txt
+docker network inspect bots-egress >/dev/null
+docker volume inspect fworld_bot_data >/dev/null
+compose=(docker compose --env-file "$env_file" -p fworld-bot -f "$release/compose.yaml" -f "$release/deploy/compose.production.yaml")
+export DEPLOY_SHA="$sha"
+"${compose[@]}" config --quiet
+
+old_container="$(docker ps -aq --filter label=com.docker.compose.project=fworld-bot --filter label=com.docker.compose.service=bot | head -n 1)"
+old_image=''
+if [[ -n "$old_container" ]]; then
+  old_image="$(docker inspect --format '{{.Image}}' "$old_container")"
+  docker image tag "$old_image" schedule-telegram-bot:rollback
+fi
+
+"${compose[@]}" build bot
+if ! "${compose[@]}" up -d --no-build --wait --wait-timeout 120 bot; then
+  if [[ -n "$old_image" ]]; then
+    docker image tag schedule-telegram-bot:rollback "schedule-telegram-bot:$sha"
+    "${compose[@]}" up -d --no-build --force-recreate --wait --wait-timeout 120 bot || true
+  fi
+  echo 'Deployment failed; previous image restored when available' >&2
+  exit 1
+fi
+
+container="$("${compose[@]}" ps -q bot)"
+test -n "$container"
+test "$(docker inspect --format '{{.State.Health.Status}}' "$container")" = healthy
+printf '%s\n' "$sha" > /var/lib/fworld-deploy/current-sha
+ln -sfn -- "$release" /srv/bots/fworld-current
+docker image rm schedule-telegram-bot:rollback >/dev/null 2>&1 || true
+printf 'Deployed %s\n' "$sha"

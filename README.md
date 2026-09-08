@@ -1,24 +1,14 @@
 # Telegram-бот расписания
 
 [![CI](https://github.com/Fwor1d/schedule-telegram-bot/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Fwor1d/schedule-telegram-bot/actions/workflows/ci.yml)
-[![Сервер: ещё не подключён](docs/server-status.svg)](SERVER_SETUP.md)
 
 Код проверяется при изменении `main` и в pull request: тесты Python 3.12,
-конфигурация, сборка Docker и запуск проверки данных внутри образа.
-Dependabot предлагает обновления библиотек и GitHub Actions.
-
-**Сервер ещё не подключён.** Серый индикатор — заглушка: состояние сервера
-пока не проверяется. После подключения его нужно заменить на badge `Server status`
-по инструкции ниже. Деплой включается переменной
-`DEPLOY_ENABLED=true`, мониторинг — `MONITORING_ENABLED=true`, только после
-добавления SSH-доступа и выбора постоянного Docker volume.
-Пошаговая настройка: [SERVER_SETUP.md](SERVER_SETUP.md).
+проверка секретов и runtime-данных, конфигурация, Docker-сборка и запуск
+healthcheck внутри read-only контейнера.
 
 [Последние деплои](https://github.com/Fwor1d/schedule-telegram-bot/actions/workflows/deploy.yml)
-· [Проверки сервера](https://github.com/Fwor1d/schedule-telegram-bot/actions/workflows/bot-status.yml).
-Зелёный CI означает исправность проверок кода; состояние работающего сервера
-смотрите отдельно. Проверка сервера контролирует SSH, контейнер и SQLite,
-но ещё не проверяет получение сообщения и ответ через Telegram.
+показывают commit, который CI продвинул серверу. Рабочее состояние production
+смотрите через команды из [SERVER_SETUP.md](SERVER_SETUP.md).
 
 Бот показывает расписание по кнопкам **Сегодня / Пн / Вт / Ср / Чт / Пт**,
 отправляет карту и сам определяет верхнюю или нижнюю неделю. Закрытая
@@ -135,29 +125,21 @@ Telegram:
 Контейнер не открывает входящие порты: Telegram long polling работает через
 исходящие HTTPS-запросы. Запускайте ровно один экземпляр бота.
 
-1. Установите Docker Engine с Compose plugin.
-2. Скопируйте .env.example в .env и замените пример своим числовым ID:
-
-       ADMIN_USER_IDS=123456789
-
-3. Создайте secrets/telegram_bot_token.txt и положите туда только токен от
-   BotFather одной строкой.
-4. Запустите:
-
-       docker compose up -d --build
-
-5. Проверьте:
-
-       docker compose ps
-       docker compose logs --tail=100 bot
-
-Обновление кода:
+Для локального ручного запуска скопируйте `.env.example` в `.env`, создайте
+`secrets/telegram_bot_token.txt` и выполните:
 
     docker compose up -d --build
 
-SQLite, загруженные фотографии и архив находятся в named volume bot_data и
-переживут обычную пересборку. Не запускайте docker compose down -v: ключ -v
-удаляет том вместе с расписанием.
+Production обновляется после merge в `main`. GitHub Actions запускает CI и
+продвигает проверенный commit в ветку `deploy`. Сервер раз в минуту читает эту
+ветку repository-scoped ключом без права записи, собирает образ с тегом commit
+SHA и переключает контейнер только после успешного healthcheck. SSH-доступ к
+серверу в GitHub не хранится. Подробности первоначальной настройки и диагностики
+описаны в [SERVER_SETUP.md](SERVER_SETUP.md).
+
+SQLite, загруженные фотографии и архив находятся в Docker volume
+`fworld_bot_data` и переживают пересборку. Не запускайте `docker compose down
+-v`: ключ `-v` удаляет том вместе с расписанием.
 
 Для согласованной резервной копии сначала остановите контейнер, скопируйте
 каталог данных и запустите его снова:

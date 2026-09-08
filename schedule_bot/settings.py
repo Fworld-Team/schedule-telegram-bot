@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import re
 from typing import Any
+from urllib.parse import urlsplit
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -33,6 +34,7 @@ class Settings:
     utc_offset_hours: int
     data_directory: Path | None = None
     admin_user_ids: frozenset[int] = frozenset()
+    proxy_url: str | None = None
 
     @classmethod
     def load(cls, project_root: Path | None = None) -> "Settings":
@@ -98,6 +100,7 @@ class Settings:
             utc_offset_hours=offset,
             data_directory=data_directory,
             admin_user_ids=admin_user_ids,
+            proxy_url=_parse_proxy_url(os.environ.get("BOT_PROXY_URL", "")),
         )
 
     def ensure_media_directories(self) -> None:
@@ -137,6 +140,27 @@ def load_bot_token(settings: Settings) -> str:
             "Получите его у @BotFather и вставьте одной строкой в token.txt."
         )
     return token
+
+
+def _parse_proxy_url(value: str) -> str | None:
+    value = value.strip()
+    if not value:
+        return None
+    try:
+        parsed = urlsplit(value)
+        valid = (
+            parsed.scheme in {"http", "https"}
+            and bool(parsed.hostname)
+            and parsed.port != 0
+            and parsed.path in {"", "/"}
+            and not parsed.query
+            and not parsed.fragment
+        )
+    except ValueError:
+        valid = False
+    if not valid:
+        raise ConfigurationError("BOT_PROXY_URL должен быть адресом HTTP(S)-прокси")
+    return value
 
 
 def _resolve_path(root: Path, raw_value: Any) -> Path:

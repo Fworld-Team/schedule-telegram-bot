@@ -88,12 +88,15 @@ def build_application(settings: Settings) -> Application:
         settings.academic_year_start_day,
     )
     storage.initialize(_today(settings))
-    application = (
+    builder = (
         ApplicationBuilder()
         .token(load_bot_token(settings))
         .concurrent_updates(False)
-        .build()
     )
+    if settings.proxy_url:
+        # Polling and ordinary Bot API requests use separate HTTP clients.
+        builder.proxy(settings.proxy_url).get_updates_proxy(settings.proxy_url)
+    application = builder.build()
     application.bot_data["settings"] = settings
     application.bot_data["storage"] = storage
     application.bot_data["catalog"] = storage.active_catalog()

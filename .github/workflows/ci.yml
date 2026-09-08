@@ -12,7 +12,6 @@ permissions:
 
 jobs:
   test:
-    name: Python tests and Docker build
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -21,25 +20,23 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
-          python-version: '3.12'
+          python-version: "3.12"
           cache: pip
-      - name: Check files before publishing
-        run: python scripts/check_repository.py
-      - name: Install dependencies
-        run: python -m pip install -r requirements.txt
-      - name: Run all tests
-        run: python -m unittest discover -s tests -v
-      - name: Check initial schedule
-        run: python -m schedule_bot --check
-      - name: Validate server scripts
-        run: for script in scripts/*.sh; do bash -n "$script"; done
-      - name: Build Docker image
-        run: docker build -t schedule-bot:ci .
-      - name: Check image as unprivileged user with read-only filesystem
+      - run: python scripts/check_repository.py
+      - run: python -m pip install -r requirements.txt
+      - run: python -m unittest discover -s tests -v
+      - run: python -m schedule_bot --check
+      - run: bash -n deploy/server/fworld-deploy-poll
+      - name: Validate systemd units
+        run: |
+          sudo install -m 0755 deploy/server/fworld-deploy-poll /usr/local/sbin/fworld-deploy-poll
+          systemd-analyze verify deploy/server/fworld-deploy.service deploy/server/fworld-deploy.timer
+      - run: docker build -t schedule-telegram-bot:ci .
+      - name: Validate the unprivileged, read-only image
         run: |
           docker run --rm --read-only --cap-drop ALL \
             --security-opt no-new-privileges:true \
             --tmpfs /tmp:size=64m,mode=1777 \
             --tmpfs /data:uid=10001,gid=10001,mode=0700 \
-            -e BOT_DATA_DIR=/data schedule-bot:ci \
+            -e BOT_DATA_DIR=/data schedule-telegram-bot:ci \
             sh -c 'python -m schedule_bot --check && python -m schedule_bot --healthcheck'

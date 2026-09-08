@@ -1,0 +1,13 @@
+[Unit]
+Description=Deploy CI-approved Fworld bot release
+After=network-online.target docker.service xray-bots.service
+Wants=network-online.target
+Requires=docker.service xray-bots.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/fworld-deploy-poll
+TimeoutStartSec=15min
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7

@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import logging
+import os
 import sys
 
 from .calendar import WEEKDAY_NAMES_RU
@@ -55,6 +57,24 @@ def _print_check(settings: Settings) -> None:
     print(f"Карт: {len(catalog.maps())}")
 
 
+async def _check_telegram(settings: Settings) -> None:
+    """Verify credentials and the proxy without consuming bot updates."""
+    from telegram import Bot
+    from telegram.request import HTTPXRequest
+
+    from .settings import load_bot_token
+
+    request = HTTPXRequest(
+        proxy=settings.proxy_url,
+        connect_timeout=5,
+        read_timeout=5,
+        write_timeout=5,
+        pool_timeout=5,
+    )
+    async with Bot(load_bot_token(settings), request=request):
+        pass
+
+
 def main() -> int:
     args = _parser().parse_args()
     logging.basicConfig(
@@ -87,6 +107,17 @@ def main() -> int:
                 print("Ошибка: SQLite quick_check завершился неуспешно", file=sys.stderr)
                 return 1
             storage.active_semester()
+            if os.environ.get("HEALTHCHECK_TELEGRAM") == "1":
+                from telegram.error import TelegramError
+
+                try:
+                    asyncio.run(_check_telegram(settings))
+                except TelegramError:
+                    print(
+                        "Ошибка: Telegram API недоступен или токен отклонён",
+                        file=sys.stderr,
+                    )
+                    return 1
             print("OK")
         elif args.check:
             _print_check(settings)
