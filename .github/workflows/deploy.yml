@@ -14,7 +14,6 @@ concurrency:
 
 jobs:
   verify:
-    if: vars.DEPLOY_ENABLED == 'true'
     uses: ./.github/workflows/ci.yml
 
   promote:
