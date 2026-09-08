@@ -1,5 +1,4 @@
-.venv/
-.venv-*/
+.venv*/
 __pycache__/
 *.py[cod]
 .pytest_cache/
@@ -15,10 +14,14 @@ secrets/*
 *.sqlite3
 *.sqlite-shm
 *.sqlite-wal
+*.sqlite3-shm
+*.sqlite3-wal
 *.log
 *.pem
 *.key
 *.zip
 .DS_Store
+backup*/
+.deploy.lock
 .idea/
 .vscode/
