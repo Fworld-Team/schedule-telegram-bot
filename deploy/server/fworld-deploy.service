@@ -2,7 +2,7 @@
 Description=Deploy CI-approved Fworld bot release
 After=network-online.target docker.service xray-bots.service
 Wants=network-online.target
-Requires=docker.service xray-bots.service
+Requires=docker.service
 
 [Service]
 Type=oneshot
