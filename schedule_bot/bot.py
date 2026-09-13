@@ -51,6 +51,9 @@ SEND_ATTEMPTS: Final = 3
 SEND_CONNECT_TIMEOUT: Final = 20.0
 SEND_READ_TIMEOUT: Final = 30.0
 SEND_WRITE_TIMEOUT: Final = 30.0
+POLLING_WATCHDOG_INTERVAL_SECONDS: Final = 60.0
+POLLING_WATCHDOG_STALL_LIMIT: Final = 3
+
 
 DAY_BUTTONS: Final[dict[str, int]] = {
     "Пн": 0,
@@ -114,8 +117,53 @@ def build_application(settings: Settings) -> Application:
     application.add_handler(CommandHandler("myid", my_id))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, route_text))
     application.add_error_handler(on_error)
-    application.post_init = set_commands
+    application.post_init = initialize_application
     return application
+
+
+async def initialize_application(application: Application) -> None:
+    """Finish startup and start a watchdog for a stalled polling connection."""
+
+    await set_commands(application)
+    application.create_task(
+        polling_watchdog(application),
+        name="polling-watchdog",
+    )
+
+
+async def polling_watchdog(
+    application: Application,
+    *,
+    interval: float = POLLING_WATCHDOG_INTERVAL_SECONDS,
+    stall_limit: int = POLLING_WATCHDOG_STALL_LIMIT,
+) -> None:
+    """Restart the container when Telegram updates remain uncollected."""
+
+    stalled_checks = 0
+    while True:
+        await asyncio.sleep(interval)
+        try:
+            webhook = await application.bot.get_webhook_info()
+        except TelegramError as exc:
+            LOGGER.warning("Не удалось проверить очередь обновлений Telegram: %s", exc)
+            continue
+
+        pending = webhook.pending_update_count
+        if pending == 0:
+            stalled_checks = 0
+            continue
+
+        stalled_checks += 1
+        LOGGER.warning(
+            "Telegram хранит %s необработанных обновлений (%s/%s)",
+            pending,
+            stalled_checks,
+            stall_limit,
+        )
+        if stalled_checks >= stall_limit:
+            LOGGER.error("Polling не забирает обновления; перезапускаю приложение")
+            application.stop_running()
+            return
 
 
 async def set_commands(application: Application) -> None:
@@ -533,6 +581,5 @@ def run(settings: Settings) -> None:
     settings.ensure_media_directories()
     application = build_application(settings)
     LOGGER.info("Запуск %s. Для остановки нажмите Ctrl+C.", settings.bot_title)
-    # A local PC may be offline for days. Old button presses would otherwise
-    # be replayed with today's date and could select the wrong week.
-    application.run_polling(drop_pending_updates=True)
+    # Preserve commands that arrived while polling was being restarted.
+    application.run_polling(drop_pending_updates=False)
