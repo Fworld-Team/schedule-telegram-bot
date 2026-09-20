@@ -27,7 +27,15 @@ from .media import (
 
 SemesterStatus = Literal["draft", "active", "archived"]
 ScheduleVariant = Literal["common", "upper", "lower"]
+AssessmentType = Literal["credit", "differentiated_credit", "exam"]
 DAY_SLUGS = ("monday", "tuesday", "wednesday", "thursday", "friday")
+ASSESSMENT_TYPES = frozenset({"credit", "differentiated_credit", "exam"})
+ASSESSMENT_TYPE_LABELS: dict[AssessmentType, str] = {
+    "credit": "Зачёт",
+    "differentiated_credit": "Диф. зачёт",
+    "exam": "Экзамен",
+}
+MAX_SUBJECT_NAME_LENGTH = 120
 
 
 @dataclass(frozen=True, slots=True)
@@ -39,6 +47,17 @@ class Semester:
     anchor_kind: WeekKind
     created_by: int
     created_at: str
+
+
+@dataclass(frozen=True, slots=True)
+class SemesterAssessment:
+    id: int
+    semester_id: int
+    subject_name: str
+    assessment_type: AssessmentType
+    has_coursework: bool
+    created_at: str
+    updated_at: str
 
 
 class StorageError(RuntimeError):
@@ -130,6 +149,24 @@ class BotStorage:
                     chat_id INTEGER PRIMARY KEY,
                     activated_at TEXT NOT NULL
                 );
+
+                CREATE TABLE IF NOT EXISTS semester_assessments (
+                    id INTEGER PRIMARY KEY,
+                    semester_id INTEGER NOT NULL REFERENCES semesters(id),
+                    subject_name TEXT NOT NULL,
+                    assessment_type TEXT NOT NULL CHECK(
+                        assessment_type IN (
+                            'credit', 'differentiated_credit', 'exam'
+                        )
+                    ),
+                    has_coursework INTEGER NOT NULL DEFAULT 0
+                        CHECK(has_coursework IN (0, 1)),
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    UNIQUE(semester_id, subject_name)
+                );
+                CREATE INDEX IF NOT EXISTS assessments_by_semester
+                    ON semester_assessments(semester_id);
                 """
             )
             row = connection.execute("SELECT COUNT(*) FROM semesters").fetchone()
@@ -241,6 +278,182 @@ class BotStorage:
         if row is None:
             raise StorageError("Не найден активный семестр")
         return _semester_from_row(row)
+
+    def list_semester_assessments(
+        self,
+        semester_id: int,
+    ) -> list[SemesterAssessment]:
+        """Return one semester's assessments in case-insensitive name order."""
+
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT id, semester_id, subject_name, assessment_type,
+                       has_coursework, created_at, updated_at
+                FROM semester_assessments
+                WHERE semester_id = ?
+                """,
+                (semester_id,),
+            ).fetchall()
+        assessments = [_assessment_from_row(row) for row in rows]
+        return sorted(
+            assessments,
+            key=lambda item: item.subject_name.casefold(),
+        )
+
+    def get_semester_assessment(
+        self,
+        semester_id: int,
+        assessment_id: int,
+    ) -> SemesterAssessment | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT id, semester_id, subject_name, assessment_type,
+                       has_coursework, created_at, updated_at
+                FROM semester_assessments
+                WHERE semester_id = ? AND id = ?
+                """,
+                (semester_id, assessment_id),
+            ).fetchone()
+        return _assessment_from_row(row) if row is not None else None
+
+    def create_semester_assessment(
+        self,
+        semester_id: int,
+        subject_name: str,
+        assessment_type: AssessmentType,
+        has_coursework: bool,
+        user_id: int,
+    ) -> SemesterAssessment:
+        cleaned = _validate_assessment(
+            subject_name,
+            assessment_type,
+            has_coursework,
+        )
+        now = _utc_now()
+        try:
+            with self._connect() as connection:
+                _ensure_semester_exists(connection, semester_id)
+                _ensure_unique_subject(connection, semester_id, cleaned)
+                cursor = connection.execute(
+                    """
+                    INSERT INTO semester_assessments(
+                        semester_id, subject_name, assessment_type,
+                        has_coursework, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        semester_id,
+                        cleaned,
+                        assessment_type,
+                        int(has_coursework),
+                        now,
+                        now,
+                    ),
+                )
+                assessment_id = int(cursor.lastrowid)
+                self._event(
+                    connection,
+                    user_id,
+                    "assessment_created",
+                    f"{semester_id}:{assessment_id}",
+                )
+        except sqlite3.IntegrityError as exc:
+            raise StorageError(
+                "Такая дисциплина уже есть в этом семестре"
+            ) from exc
+        assessment = self.get_semester_assessment(semester_id, assessment_id)
+        if assessment is None:
+            raise StorageError("Не удалось прочитать созданную дисциплину")
+        return assessment
+
+    def update_semester_assessment(
+        self,
+        semester_id: int,
+        assessment_id: int,
+        subject_name: str,
+        assessment_type: AssessmentType,
+        has_coursework: bool,
+        user_id: int,
+    ) -> SemesterAssessment:
+        cleaned = _validate_assessment(
+            subject_name,
+            assessment_type,
+            has_coursework,
+        )
+        try:
+            with self._connect() as connection:
+                _ensure_semester_exists(connection, semester_id)
+                existing = connection.execute(
+                    """
+                    SELECT id FROM semester_assessments
+                    WHERE semester_id = ? AND id = ?
+                    """,
+                    (semester_id, assessment_id),
+                ).fetchone()
+                if existing is None:
+                    raise StorageError("Дисциплина не найдена")
+                _ensure_unique_subject(
+                    connection,
+                    semester_id,
+                    cleaned,
+                    exclude_assessment_id=assessment_id,
+                )
+                connection.execute(
+                    """
+                    UPDATE semester_assessments
+                    SET subject_name = ?, assessment_type = ?,
+                        has_coursework = ?, updated_at = ?
+                    WHERE semester_id = ? AND id = ?
+                    """,
+                    (
+                        cleaned,
+                        assessment_type,
+                        int(has_coursework),
+                        _utc_now(),
+                        semester_id,
+                        assessment_id,
+                    ),
+                )
+                self._event(
+                    connection,
+                    user_id,
+                    "assessment_updated",
+                    f"{semester_id}:{assessment_id}",
+                )
+        except sqlite3.IntegrityError as exc:
+            raise StorageError(
+                "Такая дисциплина уже есть в этом семестре"
+            ) from exc
+        assessment = self.get_semester_assessment(semester_id, assessment_id)
+        if assessment is None:
+            raise StorageError("Не удалось прочитать обновлённую дисциплину")
+        return assessment
+
+    def delete_semester_assessment(
+        self,
+        semester_id: int,
+        assessment_id: int,
+        user_id: int,
+    ) -> bool:
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """
+                DELETE FROM semester_assessments
+                WHERE semester_id = ? AND id = ?
+                """,
+                (semester_id, assessment_id),
+            )
+            removed = cursor.rowcount > 0
+            if removed:
+                self._event(
+                    connection,
+                    user_id,
+                    "assessment_deleted",
+                    f"{semester_id}:{assessment_id}",
+                )
+        return removed
 
     def create_semester(
         self,
@@ -531,6 +744,70 @@ def _semester_from_row(row: sqlite3.Row) -> Semester:
         created_by=int(row["created_by"]),
         created_at=str(row["created_at"]),
     )
+
+
+def _assessment_from_row(row: sqlite3.Row) -> SemesterAssessment:
+    return SemesterAssessment(
+        id=int(row["id"]),
+        semester_id=int(row["semester_id"]),
+        subject_name=str(row["subject_name"]),
+        assessment_type=row["assessment_type"],
+        has_coursework=bool(row["has_coursework"]),
+        created_at=str(row["created_at"]),
+        updated_at=str(row["updated_at"]),
+    )
+
+
+def _validate_assessment(
+    subject_name: str,
+    assessment_type: str,
+    has_coursework: bool,
+) -> str:
+    cleaned = " ".join(subject_name.split())
+    if not cleaned or len(cleaned) > MAX_SUBJECT_NAME_LENGTH:
+        raise StorageError(
+            "Название дисциплины должно содержать от 1 до "
+            f"{MAX_SUBJECT_NAME_LENGTH} символов"
+        )
+    if assessment_type not in ASSESSMENT_TYPES:
+        raise StorageError("Неверный вид аттестации")
+    if not isinstance(has_coursework, bool):
+        raise StorageError("Признак курсовой работы должен быть Да или Нет")
+    return cleaned
+
+
+def _ensure_semester_exists(
+    connection: sqlite3.Connection,
+    semester_id: int,
+) -> None:
+    row = connection.execute(
+        "SELECT id FROM semesters WHERE id = ?",
+        (semester_id,),
+    ).fetchone()
+    if row is None:
+        raise StorageError("Семестр не найден")
+
+
+def _ensure_unique_subject(
+    connection: sqlite3.Connection,
+    semester_id: int,
+    subject_name: str,
+    *,
+    exclude_assessment_id: int | None = None,
+) -> None:
+    rows = connection.execute(
+        """
+        SELECT id, subject_name FROM semester_assessments
+        WHERE semester_id = ?
+        """,
+        (semester_id,),
+    ).fetchall()
+    folded = subject_name.casefold()
+    for row in rows:
+        if exclude_assessment_id == int(row["id"]):
+            continue
+        if str(row["subject_name"]).casefold() == folded:
+            raise StorageError("Такая дисциплина уже есть в этом семестре")
 
 
 def _copy_supported_images(source: Path, target: Path) -> None:

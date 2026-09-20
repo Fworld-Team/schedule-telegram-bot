@@ -20,7 +20,13 @@ from telegram.warnings import PTBUserWarning
 
 from .calendar import WEEKDAY_NAMES_RU, WeekKind, week_monday
 from .settings import Settings
-from .storage import BotStorage, StorageError
+from .storage import (
+    ASSESSMENT_TYPE_LABELS,
+    MAX_SUBJECT_NAME_LENGTH,
+    BotStorage,
+    SemesterAssessment,
+    StorageError,
+)
 
 
 LOGGER = logging.getLogger(__name__)
@@ -44,7 +50,19 @@ warnings.filterwarnings(
     SELECT_UPLOAD_DAY,
     WAIT_SCHEDULE_IMAGE,
     WAIT_MAP_IMAGE,
-) = range(100, 108)
+    SELECT_ASSESSMENT_SEMESTER,
+    ASSESSMENT_MENU,
+    ASSESSMENT_ADD_NAME,
+    ASSESSMENT_ADD_TYPE,
+    ASSESSMENT_ADD_COURSEWORK,
+    ASSESSMENT_EDIT_SELECT,
+    ASSESSMENT_EDIT_MENU,
+    ASSESSMENT_EDIT_NAME,
+    ASSESSMENT_EDIT_TYPE,
+    ASSESSMENT_EDIT_COURSEWORK,
+    ASSESSMENT_DELETE_SELECT,
+    ASSESSMENT_DELETE_CONFIRM,
+) = range(100, 120)
 
 KIND_LABELS = {
     WeekKind.UPPER: "верхняя",
@@ -54,6 +72,12 @@ STATUS_LABELS = {
     "active": "активный",
     "draft": "черновик",
     "archived": "архив",
+}
+ASSESSMENT_DATA_KEYS = {
+    "assessment_semester_id",
+    "assessment_id",
+    "assessment_subject_name",
+    "assessment_type",
 }
 
 
@@ -71,7 +95,10 @@ def build_admin_conversation() -> ConversationHandler:
                 exit_button_handler,
                 CallbackQueryHandler(
                     admin_menu_action,
-                    pattern=r"^adm:(new|upload|map|week|activate|status|close)$",
+                    pattern=(
+                        r"^adm:(new|upload|map|week|activate|assessments|"
+                        r"status|close)$"
+                    ),
                 ),
                 CallbackQueryHandler(
                     activate_preview,
@@ -156,6 +183,131 @@ def build_admin_conversation() -> ConversationHandler:
                     receive_map_image,
                 ),
                 MessageHandler(~filters.COMMAND, reject_wrong_upload),
+            ],
+            SELECT_ASSESSMENT_SEMESTER: [
+                exit_button_handler,
+                CallbackQueryHandler(
+                    select_assessment_semester,
+                    pattern=r"^adm:asssem:\d+$",
+                ),
+                CallbackQueryHandler(
+                    show_admin_menu_callback,
+                    pattern=r"^adm:menu$",
+                ),
+            ],
+            ASSESSMENT_MENU: [
+                exit_button_handler,
+                CallbackQueryHandler(
+                    assessment_menu_action,
+                    pattern=r"^adm:ass:(add|edit|delete):\d+$",
+                ),
+                CallbackQueryHandler(
+                    show_assessment_semesters,
+                    pattern=r"^adm:ass:semesters$",
+                ),
+            ],
+            ASSESSMENT_ADD_NAME: [
+                exit_button_handler,
+                MessageHandler(
+                    filters.TEXT & ~filters.COMMAND,
+                    receive_assessment_name,
+                ),
+            ],
+            ASSESSMENT_ADD_TYPE: [
+                exit_button_handler,
+                CallbackQueryHandler(
+                    receive_assessment_type,
+                    pattern=(
+                        r"^adm:asstype:(credit|differentiated_credit|exam)$"
+                    ),
+                ),
+                CallbackQueryHandler(
+                    return_to_assessment_menu,
+                    pattern=r"^adm:ass:back$",
+                ),
+            ],
+            ASSESSMENT_ADD_COURSEWORK: [
+                exit_button_handler,
+                CallbackQueryHandler(
+                    receive_assessment_coursework,
+                    pattern=r"^adm:asscourse:(yes|no)$",
+                ),
+                CallbackQueryHandler(
+                    return_to_assessment_menu,
+                    pattern=r"^adm:ass:back$",
+                ),
+            ],
+            ASSESSMENT_EDIT_SELECT: [
+                exit_button_handler,
+                CallbackQueryHandler(
+                    select_assessment_to_edit,
+                    pattern=r"^adm:assedit:\d+:\d+$",
+                ),
+                CallbackQueryHandler(
+                    return_to_assessment_menu,
+                    pattern=r"^adm:ass:back$",
+                ),
+            ],
+            ASSESSMENT_EDIT_MENU: [
+                exit_button_handler,
+                CallbackQueryHandler(
+                    assessment_edit_action,
+                    pattern=r"^adm:assfield:(name|type|coursework)$",
+                ),
+                CallbackQueryHandler(
+                    return_to_assessment_menu,
+                    pattern=r"^adm:ass:back$",
+                ),
+            ],
+            ASSESSMENT_EDIT_NAME: [
+                exit_button_handler,
+                MessageHandler(
+                    filters.TEXT & ~filters.COMMAND,
+                    receive_assessment_edit_name,
+                ),
+            ],
+            ASSESSMENT_EDIT_TYPE: [
+                exit_button_handler,
+                CallbackQueryHandler(
+                    receive_assessment_edit_type,
+                    pattern=(
+                        r"^adm:assnewtype:"
+                        r"(credit|differentiated_credit|exam)$"
+                    ),
+                ),
+                CallbackQueryHandler(
+                    return_to_assessment_menu,
+                    pattern=r"^adm:ass:back$",
+                ),
+            ],
+            ASSESSMENT_EDIT_COURSEWORK: [
+                exit_button_handler,
+                CallbackQueryHandler(
+                    receive_assessment_edit_coursework,
+                    pattern=r"^adm:assnewcourse:(yes|no)$",
+                ),
+                CallbackQueryHandler(
+                    return_to_assessment_menu,
+                    pattern=r"^adm:ass:back$",
+                ),
+            ],
+            ASSESSMENT_DELETE_SELECT: [
+                exit_button_handler,
+                CallbackQueryHandler(
+                    select_assessment_to_delete,
+                    pattern=r"^adm:assdelete:\d+:\d+$",
+                ),
+                CallbackQueryHandler(
+                    return_to_assessment_menu,
+                    pattern=r"^adm:ass:back$",
+                ),
+            ],
+            ASSESSMENT_DELETE_CONFIRM: [
+                exit_button_handler,
+                CallbackQueryHandler(
+                    confirm_assessment_delete,
+                    pattern=r"^adm:assdeleteconfirm:(yes|no)$",
+                ),
             ],
         },
         fallbacks=[
@@ -242,6 +394,8 @@ async def admin_menu_action(
     if action == "activate":
         await _show_activation_choices(update, context)
         return ADMIN_MENU
+    if action == "assessments":
+        return await _offer_assessment_semesters(update, context)
     if action == "status":
         await _send_admin_status(update, context)
         return ADMIN_MENU
@@ -356,6 +510,366 @@ async def receive_semester_kind(
         )
     await _send_admin_menu(update, context)
     return ADMIN_MENU
+
+
+async def _offer_assessment_semesters(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> int:
+    _clear_assessment_data(context)
+    semesters = _storage(context).list_semesters()
+    buttons = [
+        [
+            InlineKeyboardButton(
+                f"{semester.name} · {STATUS_LABELS[semester.status]}",
+                callback_data=f"adm:asssem:{semester.id}",
+            )
+        ]
+        for semester in semesters
+    ]
+    buttons.append([InlineKeyboardButton("⬅️ Назад", callback_data="adm:menu")])
+    await update.effective_message.reply_text(
+        "Выберите семестр для управления экзаменами и зачётами:",
+        reply_markup=InlineKeyboardMarkup(buttons),
+    )
+    return SELECT_ASSESSMENT_SEMESTER
+
+
+async def show_assessment_semesters(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> int:
+    if not await _guard_callback(update, context):
+        return ConversationHandler.END
+    return await _offer_assessment_semesters(update, context)
+
+
+async def select_assessment_semester(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> int:
+    if not await _guard_callback(update, context):
+        return ConversationHandler.END
+    semester_id = int(update.callback_query.data.rsplit(":", 1)[1])
+    return await _send_assessment_menu(update, context, semester_id)
+
+
+async def assessment_menu_action(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> int:
+    if not await _guard_callback(update, context):
+        return ConversationHandler.END
+    _, _, action, raw_semester_id = update.callback_query.data.split(":")
+    semester_id = int(raw_semester_id)
+    semester = _storage(context).get_semester(semester_id)
+    if semester is None:
+        await update.effective_message.reply_text("Семестр уже не существует.")
+        return await _offer_assessment_semesters(update, context)
+
+    _clear_assessment_data(context)
+    context.user_data["assessment_semester_id"] = semester_id
+    if action == "add":
+        await update.effective_message.reply_text("Введите название дисциплины.")
+        return ASSESSMENT_ADD_NAME
+
+    assessments = _storage(context).list_semester_assessments(semester_id)
+    if not assessments:
+        await update.effective_message.reply_text(
+            "В этом семестре пока нет дисциплин."
+        )
+        _clear_assessment_data(context)
+        return await _send_assessment_menu(update, context, semester_id)
+
+    if action == "edit":
+        prefix = "adm:assedit"
+        prompt = "Выберите дисциплину для изменения:"
+        next_state = ASSESSMENT_EDIT_SELECT
+    else:
+        prefix = "adm:assdelete"
+        prompt = "Выберите дисциплину для удаления:"
+        next_state = ASSESSMENT_DELETE_SELECT
+    buttons = [
+        [
+            InlineKeyboardButton(
+                _short_assessment_label(assessment),
+                callback_data=(
+                    f"{prefix}:{semester_id}:{assessment.id}"
+                ),
+            )
+        ]
+        for assessment in assessments
+    ]
+    buttons.append(
+        [InlineKeyboardButton("⬅️ Назад", callback_data="adm:ass:back")]
+    )
+    await update.effective_message.reply_text(
+        prompt,
+        reply_markup=InlineKeyboardMarkup(buttons),
+    )
+    return next_state
+
+
+async def receive_assessment_name(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> int:
+    if not await _guard_message(update, context):
+        return ConversationHandler.END
+    name = _clean_subject_name(update.effective_message.text or "")
+    if name is None:
+        await update.effective_message.reply_text(
+            "Название дисциплины должно содержать от 1 до "
+            f"{MAX_SUBJECT_NAME_LENGTH} символов. Попробуйте ещё раз."
+        )
+        return ASSESSMENT_ADD_NAME
+    context.user_data["assessment_subject_name"] = name
+    await update.effective_message.reply_text(
+        "Выберите вид аттестации:",
+        reply_markup=_assessment_type_keyboard("adm:asstype"),
+    )
+    return ASSESSMENT_ADD_TYPE
+
+
+async def receive_assessment_type(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> int:
+    if not await _guard_callback(update, context):
+        return ConversationHandler.END
+    assessment_type = update.callback_query.data.rsplit(":", 1)[1]
+    context.user_data["assessment_type"] = assessment_type
+    await update.effective_message.reply_text(
+        "Есть курсовая работа?",
+        reply_markup=_coursework_keyboard("adm:asscourse"),
+    )
+    return ASSESSMENT_ADD_COURSEWORK
+
+
+async def receive_assessment_coursework(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> int:
+    if not await _guard_callback(update, context):
+        return ConversationHandler.END
+    semester_id = context.user_data.get("assessment_semester_id")
+    subject_name = context.user_data.get("assessment_subject_name")
+    assessment_type = context.user_data.get("assessment_type")
+    has_coursework = update.callback_query.data.endswith(":yes")
+    if (
+        not isinstance(semester_id, int)
+        or not isinstance(subject_name, str)
+        or assessment_type not in ASSESSMENT_TYPE_LABELS
+    ):
+        _clear_assessment_data(context)
+        await update.effective_message.reply_text(
+            "Данные мастера устарели. Начните добавление заново."
+        )
+        return await _offer_assessment_semesters(update, context)
+    try:
+        assessment = _storage(context).create_semester_assessment(
+            semester_id,
+            subject_name,
+            assessment_type,
+            has_coursework,
+            update.effective_user.id,
+        )
+    except StorageError as exc:
+        await update.effective_message.reply_text(f"Не удалось добавить: {exc}")
+    else:
+        await update.effective_message.reply_text(
+            f"Добавлено: {_assessment_line(assessment)}"
+        )
+    _clear_assessment_data(context)
+    return await _send_assessment_menu(update, context, semester_id)
+
+
+async def select_assessment_to_edit(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> int:
+    if not await _guard_callback(update, context):
+        return ConversationHandler.END
+    _, _, raw_semester_id, raw_assessment_id = (
+        update.callback_query.data.split(":")
+    )
+    semester_id = int(raw_semester_id)
+    assessment_id = int(raw_assessment_id)
+    assessment = _storage(context).get_semester_assessment(
+        semester_id,
+        assessment_id,
+    )
+    if assessment is None:
+        await update.effective_message.reply_text("Дисциплина уже не существует.")
+        _clear_assessment_data(context)
+        return await _send_assessment_menu(update, context, semester_id)
+    context.user_data["assessment_semester_id"] = semester_id
+    context.user_data["assessment_id"] = assessment_id
+    return await _send_assessment_edit_menu(update, assessment)
+
+
+async def assessment_edit_action(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> int:
+    if not await _guard_callback(update, context):
+        return ConversationHandler.END
+    assessment = _selected_assessment(context)
+    if assessment is None:
+        await update.effective_message.reply_text(
+            "Данные редактирования устарели. Выберите дисциплину заново."
+        )
+        return await _return_to_selected_assessment_menu(update, context)
+    field = update.callback_query.data.rsplit(":", 1)[1]
+    if field == "name":
+        await update.effective_message.reply_text(
+            "Введите новое название дисциплины."
+        )
+        return ASSESSMENT_EDIT_NAME
+    if field == "type":
+        await update.effective_message.reply_text(
+            "Выберите новый вид аттестации:",
+            reply_markup=_assessment_type_keyboard("adm:assnewtype"),
+        )
+        return ASSESSMENT_EDIT_TYPE
+    await update.effective_message.reply_text(
+        "Есть курсовая работа?",
+        reply_markup=_coursework_keyboard("adm:assnewcourse"),
+    )
+    return ASSESSMENT_EDIT_COURSEWORK
+
+
+async def receive_assessment_edit_name(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> int:
+    if not await _guard_message(update, context):
+        return ConversationHandler.END
+    name = _clean_subject_name(update.effective_message.text or "")
+    if name is None:
+        await update.effective_message.reply_text(
+            "Название дисциплины должно содержать от 1 до "
+            f"{MAX_SUBJECT_NAME_LENGTH} символов. Попробуйте ещё раз."
+        )
+        return ASSESSMENT_EDIT_NAME
+    return await _apply_assessment_update(
+        update,
+        context,
+        subject_name=name,
+        failure_state=ASSESSMENT_EDIT_NAME,
+    )
+
+
+async def receive_assessment_edit_type(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> int:
+    if not await _guard_callback(update, context):
+        return ConversationHandler.END
+    assessment_type = update.callback_query.data.rsplit(":", 1)[1]
+    return await _apply_assessment_update(
+        update,
+        context,
+        assessment_type=assessment_type,
+        failure_state=ASSESSMENT_EDIT_TYPE,
+    )
+
+
+async def receive_assessment_edit_coursework(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> int:
+    if not await _guard_callback(update, context):
+        return ConversationHandler.END
+    return await _apply_assessment_update(
+        update,
+        context,
+        has_coursework=update.callback_query.data.endswith(":yes"),
+        failure_state=ASSESSMENT_EDIT_COURSEWORK,
+    )
+
+
+async def select_assessment_to_delete(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> int:
+    if not await _guard_callback(update, context):
+        return ConversationHandler.END
+    _, _, raw_semester_id, raw_assessment_id = (
+        update.callback_query.data.split(":")
+    )
+    semester_id = int(raw_semester_id)
+    assessment_id = int(raw_assessment_id)
+    assessment = _storage(context).get_semester_assessment(
+        semester_id,
+        assessment_id,
+    )
+    if assessment is None:
+        await update.effective_message.reply_text("Дисциплина уже не существует.")
+        _clear_assessment_data(context)
+        return await _send_assessment_menu(update, context, semester_id)
+    context.user_data["assessment_semester_id"] = semester_id
+    context.user_data["assessment_id"] = assessment_id
+    await update.effective_message.reply_text(
+        f"Удалить «{_assessment_line(assessment)}»?",
+        reply_markup=InlineKeyboardMarkup(
+            [
+                [
+                    InlineKeyboardButton(
+                        "Да, удалить",
+                        callback_data="adm:assdeleteconfirm:yes",
+                    )
+                ],
+                [
+                    InlineKeyboardButton(
+                        "Нет",
+                        callback_data="adm:assdeleteconfirm:no",
+                    )
+                ],
+            ]
+        ),
+    )
+    return ASSESSMENT_DELETE_CONFIRM
+
+
+async def confirm_assessment_delete(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> int:
+    if not await _guard_callback(update, context):
+        return ConversationHandler.END
+    semester_id = context.user_data.get("assessment_semester_id")
+    assessment_id = context.user_data.get("assessment_id")
+    if not isinstance(semester_id, int) or not isinstance(assessment_id, int):
+        _clear_assessment_data(context)
+        await update.effective_message.reply_text(
+            "Данные удаления устарели. Выберите дисциплину заново."
+        )
+        return await _offer_assessment_semesters(update, context)
+    if update.callback_query.data.endswith(":yes"):
+        removed = _storage(context).delete_semester_assessment(
+            semester_id,
+            assessment_id,
+            update.effective_user.id,
+        )
+        await update.effective_message.reply_text(
+            "Дисциплина удалена."
+            if removed
+            else "Дисциплина уже была удалена."
+        )
+    else:
+        await update.effective_message.reply_text("Удаление отменено.")
+    _clear_assessment_data(context)
+    return await _send_assessment_menu(update, context, semester_id)
+
+
+async def return_to_assessment_menu(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> int:
+    if not await _guard_callback(update, context):
+        return ConversationHandler.END
+    return await _return_to_selected_assessment_menu(update, context)
 
 
 async def select_upload_semester(
@@ -613,6 +1127,211 @@ async def cancel_admin(
     return ConversationHandler.END
 
 
+async def _send_assessment_menu(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    semester_id: int,
+) -> int:
+    _clear_assessment_data(context)
+    semester = _storage(context).get_semester(semester_id)
+    if semester is None:
+        await update.effective_message.reply_text("Семестр уже не существует.")
+        return await _offer_assessment_semesters(update, context)
+    assessments = _storage(context).list_semester_assessments(semester_id)
+    lines = [
+        "🎓 Экзамены и зачёты",
+        f"Семестр: {semester.name} · {STATUS_LABELS[semester.status]}",
+        "",
+    ]
+    if assessments:
+        lines.extend(_assessment_line(item) for item in assessments)
+    else:
+        lines.append("Дисциплины пока не добавлены.")
+    await update.effective_message.reply_text(
+        "\n".join(lines),
+        reply_markup=InlineKeyboardMarkup(
+            [
+                [
+                    InlineKeyboardButton(
+                        "➕ Добавить дисциплину",
+                        callback_data=f"adm:ass:add:{semester_id}",
+                    )
+                ],
+                [
+                    InlineKeyboardButton(
+                        "✏️ Изменить",
+                        callback_data=f"adm:ass:edit:{semester_id}",
+                    )
+                ],
+                [
+                    InlineKeyboardButton(
+                        "🗑 Удалить",
+                        callback_data=f"adm:ass:delete:{semester_id}",
+                    )
+                ],
+                [
+                    InlineKeyboardButton(
+                        "⬅️ Назад",
+                        callback_data="adm:ass:semesters",
+                    )
+                ],
+            ]
+        ),
+    )
+    return ASSESSMENT_MENU
+
+
+async def _send_assessment_edit_menu(
+    update: Update,
+    assessment: SemesterAssessment,
+) -> int:
+    await update.effective_message.reply_text(
+        f"Изменение дисциплины:\n{_assessment_line(assessment)}",
+        reply_markup=InlineKeyboardMarkup(
+            [
+                [
+                    InlineKeyboardButton(
+                        "Название",
+                        callback_data="adm:assfield:name",
+                    )
+                ],
+                [
+                    InlineKeyboardButton(
+                        "Тип аттестации",
+                        callback_data="adm:assfield:type",
+                    )
+                ],
+                [
+                    InlineKeyboardButton(
+                        "Курсовая",
+                        callback_data="adm:assfield:coursework",
+                    )
+                ],
+                [
+                    InlineKeyboardButton(
+                        "⬅️ Назад",
+                        callback_data="adm:ass:back",
+                    )
+                ],
+            ]
+        ),
+    )
+    return ASSESSMENT_EDIT_MENU
+
+
+async def _apply_assessment_update(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    *,
+    subject_name: str | None = None,
+    assessment_type: str | None = None,
+    has_coursework: bool | None = None,
+    failure_state: int,
+) -> int:
+    current = _selected_assessment(context)
+    if current is None:
+        await update.effective_message.reply_text(
+            "Данные редактирования устарели. Выберите дисциплину заново."
+        )
+        return await _return_to_selected_assessment_menu(update, context)
+    try:
+        updated = _storage(context).update_semester_assessment(
+            current.semester_id,
+            current.id,
+            subject_name if subject_name is not None else current.subject_name,
+            assessment_type
+            if assessment_type is not None
+            else current.assessment_type,
+            has_coursework
+            if has_coursework is not None
+            else current.has_coursework,
+            update.effective_user.id,
+        )
+    except StorageError as exc:
+        await update.effective_message.reply_text(f"Не удалось изменить: {exc}")
+        return failure_state
+    semester_id = current.semester_id
+    _clear_assessment_data(context)
+    await update.effective_message.reply_text(
+        f"Изменено: {_assessment_line(updated)}"
+    )
+    return await _send_assessment_menu(update, context, semester_id)
+
+
+async def _return_to_selected_assessment_menu(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> int:
+    semester_id = context.user_data.get("assessment_semester_id")
+    _clear_assessment_data(context)
+    if not isinstance(semester_id, int):
+        return await _offer_assessment_semesters(update, context)
+    return await _send_assessment_menu(update, context, semester_id)
+
+
+def _selected_assessment(
+    context: ContextTypes.DEFAULT_TYPE,
+) -> SemesterAssessment | None:
+    semester_id = context.user_data.get("assessment_semester_id")
+    assessment_id = context.user_data.get("assessment_id")
+    if not isinstance(semester_id, int) or not isinstance(assessment_id, int):
+        return None
+    return _storage(context).get_semester_assessment(semester_id, assessment_id)
+
+
+def _assessment_type_keyboard(prefix: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("Зачёт", callback_data=f"{prefix}:credit")],
+            [
+                InlineKeyboardButton(
+                    "Диф. зачёт",
+                    callback_data=f"{prefix}:differentiated_credit",
+                )
+            ],
+            [InlineKeyboardButton("Экзамен", callback_data=f"{prefix}:exam")],
+            [InlineKeyboardButton("⬅️ Назад", callback_data="adm:ass:back")],
+        ]
+    )
+
+
+def _coursework_keyboard(prefix: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton("Да", callback_data=f"{prefix}:yes"),
+                InlineKeyboardButton("Нет", callback_data=f"{prefix}:no"),
+            ],
+            [InlineKeyboardButton("⬅️ Назад", callback_data="adm:ass:back")],
+        ]
+    )
+
+
+def _assessment_line(assessment: SemesterAssessment) -> str:
+    coursework = " + курсовая" if assessment.has_coursework else ""
+    return (
+        f"{assessment.subject_name} — "
+        f"{ASSESSMENT_TYPE_LABELS[assessment.assessment_type]}{coursework}"
+    )
+
+
+def _short_assessment_label(assessment: SemesterAssessment) -> str:
+    label = _assessment_line(assessment)
+    return label if len(label) <= 60 else label[:57].rstrip() + "…"
+
+
+def _clean_subject_name(raw_name: str) -> str | None:
+    cleaned = " ".join(raw_name.split())
+    if not cleaned or len(cleaned) > MAX_SUBJECT_NAME_LENGTH:
+        return None
+    return cleaned
+
+
+def _clear_assessment_data(context: ContextTypes.DEFAULT_TYPE) -> None:
+    for key in ASSESSMENT_DATA_KEYS:
+        context.user_data.pop(key, None)
+
+
 async def _offer_upload_semesters(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
@@ -768,6 +1487,12 @@ async def _send_admin_menu(
                     InlineKeyboardButton(
                         "✅ Активировать семестр",
                         callback_data="adm:activate",
+                    )
+                ],
+                [
+                    InlineKeyboardButton(
+                        "🎓 Экзамены и зачёты",
+                        callback_data="adm:assessments",
                     )
                 ],
                 [

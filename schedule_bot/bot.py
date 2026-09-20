@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timedelta, timezone
+from html import escape
 import logging
 from pathlib import Path
 from typing import Final
@@ -37,15 +38,20 @@ from .calendar import (
 )
 from .media import MediaCatalog
 from .settings import Settings, load_bot_token
-from .storage import BotStorage
+from .storage import ASSESSMENT_TYPE_LABELS, BotStorage
 
 
 LOGGER = logging.getLogger(__name__)
 
 TODAY_BUTTON: Final = "📅 Сегодня"
+STUDY_PLAN_BUTTON: Final = "📚 Учебный план"
+ASSESSMENTS_BUTTON: Final = "🎓 Экзамены"
 MAP_BUTTON: Final = "🗺️ Карта"
 HELP_BUTTON: Final = "ℹ️ Помощь"
 EXIT_BUTTON: Final = "🚪 Выход"
+STUDY_PLAN_RELATIVE_PATH: Final = (
+    Path("media") / "study_plan" / "study_plan_2026_2027.png"
+)
 ACTIVE_CHAT_IDS_KEY: Final = "active_chat_ids"
 SEND_ATTEMPTS: Final = 3
 SEND_CONNECT_TIMEOUT: Final = 20.0
@@ -67,6 +73,7 @@ MAIN_KEYBOARD = ReplyKeyboardMarkup(
     [
         [TODAY_BUTTON, "Пн", "Вт"],
         ["Ср", "Чт", "Пт"],
+        [STUDY_PLAN_BUTTON, ASSESSMENTS_BUTTON],
         [MAP_BUTTON, HELP_BUTTON, EXIT_BUTTON],
     ],
     resize_keyboard=True,
@@ -250,6 +257,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "Как пользоваться:\n"
         "• «Сегодня» — расписание на текущую дату;\n"
         "• Пн–Пт — день текущей календарной недели;\n"
+        "• «Учебный план» — календарный учебный график;\n"
+        "• «Экзамены» — зачёты, диф. зачёты и экзамены текущего семестра;\n"
         "• «Карта» — показывает карту;\n"
         "• «Выход» или /stop — выключает ответы в этом чате.\n\n"
         "Верхняя неделя — нечётная, нижняя — чётная.\n"
@@ -308,6 +317,10 @@ async def route_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         await _send_schedule(update, context, target)
     elif text == TODAY_BUTTON:
         await today_command(update, context)
+    elif text == STUDY_PLAN_BUTTON:
+        await _send_study_plan(update, context)
+    elif text == ASSESSMENTS_BUTTON:
+        await _send_assessments(update, context)
     elif text == MAP_BUTTON:
         await map_command(update, context)
     elif text == HELP_BUTTON:
@@ -393,7 +406,81 @@ async def _send_maps(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     await _send_images(message, files, "Карта кампуса")
 
 
-async def _send_images(message, files: list[Path], caption: str) -> None:
+async def _send_study_plan(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    message = update.effective_message
+    if message is None:
+        return
+    path = _settings(context).project_root / STUDY_PLAN_RELATIVE_PATH
+    if not path.is_file():
+        await message.reply_text(
+            "Учебный график пока не загружен.",
+            reply_markup=MAIN_KEYBOARD,
+        )
+        return
+    caption = (
+        "📚 <b>Учебный график 2026/2027</b>\n\n"
+        "🎓 Зимняя сессия: <b>09.01–24.01</b>\n"
+        "❄️ Зимние каникулы: <b>25.01–07.02</b>\n"
+        "🎓 Летняя сессия: <b>14.06–27.06</b>\n"
+        "🏢 Практика: <b>28.06–25.07</b>\n"
+        "🌴 Летние каникулы: <b>26.07–31.08</b>\n\n"
+        "Обозначения:\n"
+        "Э — экзаменационная сессия\n"
+        "П — производственная практика\n"
+        "К — каникулы\n"
+        "* — нерабочие праздничные дни"
+    )
+    await _send_images(
+        message,
+        [path],
+        caption,
+        parse_mode="HTML",
+    )
+
+
+async def _send_assessments(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    message = update.effective_message
+    if message is None:
+        return
+    storage = _storage_or_none(context)
+    assessments = []
+    if storage is not None:
+        semester = storage.active_semester()
+        assessments = storage.list_semester_assessments(semester.id)
+    if not assessments:
+        await message.reply_text(
+            "Информация об экзаменах и зачётах на текущий семестр пока "
+            "не добавлена.",
+            reply_markup=MAIN_KEYBOARD,
+        )
+        return
+    lines = ["🎓 <b>Экзамены и зачёты</b>", ""]
+    for assessment in assessments:
+        suffix = " + курсовая" if assessment.has_coursework else ""
+        lines.append(
+            f"{escape(assessment.subject_name)} — "
+            f"{ASSESSMENT_TYPE_LABELS[assessment.assessment_type]}{suffix}"
+        )
+    await message.reply_text(
+        "\n".join(lines),
+        parse_mode="HTML",
+        reply_markup=MAIN_KEYBOARD,
+    )
+
+
+async def _send_images(
+    message,
+    files: list[Path],
+    caption: str,
+    *,
+    parse_mode: str | None = None,
+) -> None:
     """Send photos one by one and fall back to documents for invalid dimensions."""
 
     for index, path in enumerate(files):
@@ -405,6 +492,7 @@ async def _send_images(message, files: list[Path], caption: str) -> None:
                 path,
                 current_caption,
                 reply_markup,
+                parse_mode,
                 as_document=False,
             )
         except BadRequest:
@@ -414,6 +502,7 @@ async def _send_images(message, files: list[Path], caption: str) -> None:
                 path,
                 current_caption,
                 reply_markup,
+                parse_mode,
                 as_document=True,
             )
         except OSError:
@@ -430,6 +519,7 @@ async def _send_image_with_retries(
     path: Path,
     caption: str | None,
     reply_markup,
+    parse_mode: str | None,
     *,
     as_document: bool,
 ) -> None:
@@ -441,6 +531,7 @@ async def _send_image_with_retries(
                 kwargs = {
                     "caption": caption,
                     "reply_markup": reply_markup,
+                    "parse_mode": parse_mode,
                     "connect_timeout": SEND_CONNECT_TIMEOUT,
                     "read_timeout": SEND_READ_TIMEOUT,
                     "write_timeout": SEND_WRITE_TIMEOUT,
