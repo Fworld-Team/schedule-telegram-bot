@@ -1,6 +1,7 @@
 from datetime import date
 from io import BytesIO
 from pathlib import Path
+import sqlite3
 from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import patch
@@ -215,6 +216,176 @@ class StorageTests(unittest.TestCase):
             [path.name for path in self.storage.active_catalog().maps()],
             ["campus.png"],
         )
+
+    def test_repeated_initialize_adds_assessment_table_without_data_loss(self) -> None:
+        active = self.storage.active_semester()
+        self.storage.set_chat_active(12345, True)
+
+        self.storage.initialize(date(2026, 9, 7))
+
+        connection = sqlite3.connect(self.storage.database_path)
+        try:
+            columns = {
+                row[1]
+                for row in connection.execute(
+                    "PRAGMA table_info(semester_assessments)"
+                )
+            }
+        finally:
+            connection.close()
+        self.assertEqual(
+            columns,
+            {
+                "id",
+                "semester_id",
+                "subject_name",
+                "assessment_type",
+                "has_coursework",
+                "created_at",
+                "updated_at",
+            },
+        )
+        self.assertEqual(self.storage.active_semester().id, active.id)
+        self.assertEqual(self.storage.active_chat_ids(), {12345})
+
+    def test_assessment_crud_is_scoped_to_semester_and_persistent(self) -> None:
+        active = self.storage.active_semester()
+        draft = self.storage.create_semester(
+            "Весна 2027",
+            date(2027, 2, 8),
+            WeekKind.UPPER,
+            user_id=42,
+        )
+        first = self.storage.create_semester_assessment(
+            active.id,
+            "  Базы   данных ",
+            "differentiated_credit",
+            False,
+            user_id=42,
+        )
+        second = self.storage.create_semester_assessment(
+            draft.id,
+            "Физическая культура",
+            "exam",
+            True,
+            user_id=42,
+        )
+
+        self.assertEqual(first.subject_name, "Базы данных")
+        self.assertFalse(first.has_coursework)
+        self.assertTrue(second.has_coursework)
+        self.assertEqual(
+            [item.id for item in self.storage.list_semester_assessments(active.id)],
+            [first.id],
+        )
+        self.assertEqual(
+            [item.id for item in self.storage.list_semester_assessments(draft.id)],
+            [second.id],
+        )
+
+        updated = self.storage.update_semester_assessment(
+            draft.id,
+            second.id,
+            "Физическая культура и спорт",
+            "credit",
+            False,
+            user_id=42,
+        )
+        self.assertEqual(updated.subject_name, "Физическая культура и спорт")
+        self.assertEqual(updated.assessment_type, "credit")
+        self.assertFalse(updated.has_coursework)
+
+        self.storage.activate_semester(draft.id, user_id=42)
+        self.assertEqual(self.storage.get_semester(active.id).status, "archived")
+        self.assertEqual(
+            self.storage.get_semester_assessment(active.id, first.id),
+            first,
+        )
+
+        reopened = BotStorage(
+            self.storage.data_directory,
+            self.seed_schedules,
+            self.seed_maps,
+        )
+        reopened.initialize(date(2027, 2, 8))
+        persisted = reopened.get_semester_assessment(draft.id, second.id)
+        self.assertIsNotNone(persisted)
+        self.assertEqual(persisted.subject_name, "Физическая культура и спорт")
+        self.assertTrue(
+            reopened.delete_semester_assessment(
+                draft.id,
+                second.id,
+                user_id=42,
+            )
+        )
+        self.assertIsNone(reopened.get_semester_assessment(draft.id, second.id))
+        self.assertFalse(
+            reopened.delete_semester_assessment(
+                draft.id,
+                second.id,
+                user_id=42,
+            )
+        )
+
+    def test_assessments_sort_russian_names_case_insensitively(self) -> None:
+        semester_id = self.storage.active_semester().id
+        for name in ("Языки", "алгоритмы", "Базы данных"):
+            self.storage.create_semester_assessment(
+                semester_id,
+                name,
+                "credit",
+                False,
+                user_id=42,
+            )
+        self.assertEqual(
+            [
+                item.subject_name
+                for item in self.storage.list_semester_assessments(semester_id)
+            ],
+            ["алгоритмы", "Базы данных", "Языки"],
+        )
+
+    def test_invalid_or_duplicate_assessment_is_rejected(self) -> None:
+        semester_id = self.storage.active_semester().id
+        with self.assertRaises(StorageError):
+            self.storage.create_semester_assessment(
+                semester_id,
+                "   ",
+                "credit",
+                False,
+                user_id=42,
+            )
+        with self.assertRaises(StorageError):
+            self.storage.create_semester_assessment(
+                semester_id,
+                "Базы данных",
+                "oral_interview",
+                False,
+                user_id=42,
+            )
+        self.storage.create_semester_assessment(
+            semester_id,
+            "Базы данных",
+            "exam",
+            False,
+            user_id=42,
+        )
+        with self.assertRaises(StorageError):
+            self.storage.create_semester_assessment(
+                semester_id,
+                "  базы   ДАННЫХ  ",
+                "exam",
+                True,
+                user_id=42,
+            )
+        with self.assertRaises(StorageError):
+            self.storage.create_semester_assessment(
+                semester_id,
+                "Физика",
+                "exam",
+                1,
+                user_id=42,
+            )
 
 
 if __name__ == "__main__":

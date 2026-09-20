@@ -12,6 +12,7 @@ from telegram.ext import ApplicationHandlerStop
 
 from schedule_bot.bot import (
     ACTIVE_CHAT_IDS_KEY,
+    MAIN_KEYBOARD,
     activity_gate,
     help_command,
     _send_images,
@@ -22,6 +23,7 @@ from schedule_bot.bot import (
 )
 from schedule_bot.media import MediaCatalog
 from schedule_bot.settings import Settings
+from schedule_bot.storage import BotStorage
 
 
 class FakeMessage:
@@ -31,30 +33,36 @@ class FakeMessage:
         self.documents: list[tuple[str, str | None]] = []
         self.messages: list[str] = []
         self.reply_markups: list[object] = []
+        self.parse_modes: list[str | None] = []
 
     async def reply_photo(
         self,
         photo,
         caption=None,
         reply_markup=None,
+        parse_mode=None,
         **kwargs,
     ) -> None:
         self.photos.append((Path(photo.name).name, caption))
         self.reply_markups.append(reply_markup)
+        self.parse_modes.append(parse_mode)
 
     async def reply_document(
         self,
         document,
         caption=None,
         reply_markup=None,
+        parse_mode=None,
         **kwargs,
     ) -> None:
         self.documents.append((Path(document.name).name, caption))
         self.reply_markups.append(reply_markup)
+        self.parse_modes.append(parse_mode)
 
-    async def reply_text(self, text, reply_markup=None) -> None:
+    async def reply_text(self, text, reply_markup=None, parse_mode=None, **kwargs) -> None:
         self.messages.append(text)
         self.reply_markups.append(reply_markup)
+        self.parse_modes.append(parse_mode)
 
 
 class HandlerTests(unittest.TestCase):
@@ -80,17 +88,29 @@ class HandlerTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.temp.cleanup()
 
-    def context(self):
+    def context(self, storage=None):
+        bot_data = {
+            "settings": self.settings,
+            "catalog": self.catalog,
+            ACTIVE_CHAT_IDS_KEY: set(),
+        }
+        if storage is not None:
+            bot_data["storage"] = storage
         return SimpleNamespace(
             application=SimpleNamespace(
-                bot_data={
-                    "settings": self.settings,
-                    "catalog": self.catalog,
-                    ACTIVE_CHAT_IDS_KEY: set(),
-                }
+                bot_data=bot_data
             ),
             user_data={},
         )
+
+    def storage(self) -> BotStorage:
+        storage = BotStorage(
+            self.settings.project_root / "data",
+            self.settings.schedules_directory,
+            self.settings.maps_directory,
+        )
+        storage.initialize(date(2026, 8, 31))
+        return storage
 
     def run_button(self, text: str, today: date) -> FakeMessage:
         message = FakeMessage(text)
@@ -111,6 +131,21 @@ class HandlerTests(unittest.TestCase):
         self.assertEqual(message.photos[0][0], "monday.png")
         self.assertIn("Понедельник, 31.08.2026", message.photos[0][1])
         self.assertIn("верхняя", message.photos[0][1])
+
+    def test_main_keyboard_contains_new_buttons_without_moving_existing_ones(self) -> None:
+        rows = [
+            [button.text for button in row]
+            for row in MAIN_KEYBOARD.keyboard
+        ]
+        self.assertEqual(
+            rows,
+            [
+                ["📅 Сегодня", "Пн", "Вт"],
+                ["Ср", "Чт", "Пт"],
+                ["📚 Учебный план", "🎓 Экзамены"],
+                ["🗺️ Карта", "ℹ️ Помощь", "🚪 Выход"],
+            ],
+        )
 
     def test_same_day_photo_is_captioned_with_lower_week(self) -> None:
         Image.new("RGB", (4, 4), "white").save(
@@ -142,6 +177,118 @@ class HandlerTests(unittest.TestCase):
         )
         self.assertEqual(message.photos[0][1], "Карта кампуса")
         self.assertIsNone(message.photos[1][1])
+
+    def test_study_plan_button_sends_repository_image_and_caption(self) -> None:
+        study_plan = (
+            self.settings.project_root
+            / "media"
+            / "study_plan"
+            / "study_plan_2026_2027.png"
+        )
+        study_plan.parent.mkdir(parents=True)
+        Image.new("RGB", (4, 4), "white").save(study_plan, format="PNG")
+
+        message = self.run_button("📚 Учебный план", date(2026, 9, 3))
+
+        self.assertEqual(message.photos[0][0], "study_plan_2026_2027.png")
+        caption = message.photos[0][1]
+        for period in (
+            "09.01–24.01",
+            "25.01–07.02",
+            "14.06–27.06",
+            "28.06–25.07",
+            "26.07–31.08",
+        ):
+            self.assertIn(period, caption)
+        self.assertIn("<b>Учебный график 2026/2027</b>", caption)
+        self.assertEqual(message.parse_modes[0], "HTML")
+        self.assertIsNotNone(message.reply_markups[-1])
+
+    def test_missing_study_plan_is_handled_without_exception(self) -> None:
+        message = self.run_button("📚 Учебный план", date(2026, 9, 3))
+
+        self.assertEqual(message.photos, [])
+        self.assertEqual(
+            message.messages,
+            ["Учебный график пока не загружен."],
+        )
+        self.assertIsNotNone(message.reply_markups[-1])
+
+    def test_assessments_use_active_semester_and_format_all_types(self) -> None:
+        storage = self.storage()
+        active = storage.active_semester()
+        storage.create_semester_assessment(
+            active.id,
+            "Физическая культура",
+            "exam",
+            True,
+            user_id=42,
+        )
+        storage.create_semester_assessment(
+            active.id,
+            "алгоритмизация и программирование",
+            "credit",
+            False,
+            user_id=42,
+        )
+        storage.create_semester_assessment(
+            active.id,
+            "Базы данных",
+            "differentiated_credit",
+            False,
+            user_id=42,
+        )
+        draft = storage.create_semester(
+            "Будущий",
+            date(2027, 2, 8),
+            active.anchor_kind,
+            user_id=42,
+        )
+        storage.create_semester_assessment(
+            draft.id,
+            "Неактивная дисциплина",
+            "exam",
+            False,
+            user_id=42,
+        )
+        message = FakeMessage("🎓 Экзамены")
+        update = SimpleNamespace(
+            effective_message=message,
+            effective_chat=SimpleNamespace(id=100),
+        )
+
+        asyncio.run(route_text(update, self.context(storage)))
+
+        text = message.messages[0]
+        self.assertIn("🎓 <b>Экзамены и зачёты</b>", text)
+        self.assertLess(text.index("алгоритмизация"), text.index("Базы данных"))
+        self.assertLess(text.index("Базы данных"), text.index("Физическая"))
+        self.assertIn("алгоритмизация и программирование — Зачёт", text)
+        self.assertIn("Базы данных — Диф. зачёт", text)
+        self.assertIn("Физическая культура — Экзамен + курсовая", text)
+        self.assertNotIn("Базы данных — Диф. зачёт + курсовая", text)
+        self.assertNotIn("Неактивная дисциплина", text)
+        self.assertEqual(message.parse_modes[0], "HTML")
+        self.assertIsNotNone(message.reply_markups[-1])
+
+    def test_assessments_empty_active_semester_is_handled(self) -> None:
+        storage = self.storage()
+        message = FakeMessage("🎓 Экзамены")
+        update = SimpleNamespace(
+            effective_message=message,
+            effective_chat=SimpleNamespace(id=100),
+        )
+
+        asyncio.run(route_text(update, self.context(storage)))
+
+        self.assertEqual(
+            message.messages,
+            [
+                "Информация об экзаменах и зачётах на текущий семестр "
+                "пока не добавлена."
+            ],
+        )
+        self.assertIsNotNone(message.reply_markups[-1])
 
     def test_connect_timeout_is_retried_with_reopened_file(self) -> None:
         class ConnectTimeout(Exception):
@@ -178,6 +325,11 @@ class HandlerTests(unittest.TestCase):
         asyncio.run(help_command(update, self.context()))
 
         help_text = message.messages[0]
+        self.assertIn("«Учебный план» — календарный учебный график;", help_text)
+        self.assertIn(
+            "«Экзамены» — зачёты, диф. зачёты и экзамены текущего семестра;",
+            help_text,
+        )
         self.assertIn("«Карта» — показывает карту;", help_text)
         self.assertIn("«Выход» или /stop", help_text)
         self.assertIn("Верхняя неделя — нечётная", help_text)
@@ -244,6 +396,8 @@ class HandlerTests(unittest.TestCase):
             "хватит",
             "завершить",
             "обычное сообщение",
+            "учебный план",
+            "экзамены",
         ):
             message = self.run_button(text, date(2026, 9, 3))
             self.assertEqual(message.messages, [], text)
