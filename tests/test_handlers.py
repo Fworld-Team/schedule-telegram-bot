@@ -259,16 +259,18 @@ class HandlerTests(unittest.TestCase):
 
         asyncio.run(route_text(update, self.context(storage)))
 
+        self.assertEqual(
+            message.messages[0],
+            "🎓 Экзамены и зачёты\n\n"
+            "1. алгоритмизация и программирование — Зачёт\n\n"
+            "2. Базы данных — Диф. зачёт\n\n"
+            "3. Физическая культура — Экзамен + курсовая",
+        )
         text = message.messages[0]
-        self.assertIn("🎓 <b>Экзамены и зачёты</b>", text)
-        self.assertLess(text.index("алгоритмизация"), text.index("Базы данных"))
-        self.assertLess(text.index("Базы данных"), text.index("Физическая"))
-        self.assertIn("алгоритмизация и программирование — Зачёт", text)
-        self.assertIn("Базы данных — Диф. зачёт", text)
-        self.assertIn("Физическая культура — Экзамен + курсовая", text)
         self.assertNotIn("Базы данных — Диф. зачёт + курсовая", text)
         self.assertNotIn("Неактивная дисциплина", text)
-        self.assertEqual(message.parse_modes[0], "HTML")
+        self.assertNotIn("<b>", text)
+        self.assertIsNone(message.parse_modes[0])
         self.assertIsNotNone(message.reply_markups[-1])
 
     def test_assessments_empty_active_semester_is_handled(self) -> None:
