@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timedelta, timezone
-from html import escape
 import logging
 from pathlib import Path
 from typing import Final
@@ -460,16 +459,15 @@ async def _send_assessments(
             reply_markup=MAIN_KEYBOARD,
         )
         return
-    lines = ["🎓 <b>Экзамены и зачёты</b>", ""]
-    for assessment in assessments:
+    lines = ["🎓 Экзамены и зачёты"]
+    for index, assessment in enumerate(assessments, start=1):
         suffix = " + курсовая" if assessment.has_coursework else ""
         lines.append(
-            f"{escape(assessment.subject_name)} — "
+            f"{index}. {assessment.subject_name} — "
             f"{ASSESSMENT_TYPE_LABELS[assessment.assessment_type]}{suffix}"
         )
     await message.reply_text(
-        "\n".join(lines),
-        parse_mode="HTML",
+        "\n\n".join(lines),
         reply_markup=MAIN_KEYBOARD,
     )
 
