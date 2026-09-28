@@ -36,6 +36,7 @@ from .calendar import (
     date_in_current_week,
 )
 from .media import MediaCatalog
+from .schedule_monitor import start_monitor, stop_monitor
 from .settings import Settings, load_bot_token
 from .storage import ASSESSMENT_TYPE_LABELS, BotStorage
 
@@ -124,17 +125,20 @@ def build_application(settings: Settings) -> Application:
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, route_text))
     application.add_error_handler(on_error)
     application.post_init = initialize_application
+    application.post_stop = stop_monitor
+    application.post_shutdown = stop_monitor
     return application
 
 
 async def initialize_application(application: Application) -> None:
-    """Finish startup and start a watchdog for a stalled polling connection."""
+    """Finish startup and start the independent watchdog and schedule monitor."""
 
     await set_commands(application)
     application.create_task(
         polling_watchdog(application),
         name="polling-watchdog",
     )
+    start_monitor(application, ACTIVE_CHAT_IDS_KEY)
 
 
 async def polling_watchdog(
