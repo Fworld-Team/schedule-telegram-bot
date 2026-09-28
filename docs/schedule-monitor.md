@@ -111,6 +111,8 @@ receipt. One inaccessible chat does not prevent attempts to the remaining chats.
 Changes are ordered by group/day/time and normally combined into one message
 per active chat. Large changes split below 4096 UTF-16 units; plain text avoids
 Markdown/HTML injection. Every part contains the site instruction and PDF link.
+Consecutive parts wait 1.1 seconds in private chats / 3.1 seconds in groups;
+active status is rechecked after the pause so `/stop` takes effect immediately.
 Technical errors, baseline creation and unchanged results never send Telegram
 messages, including through the bot's public error handler.
 

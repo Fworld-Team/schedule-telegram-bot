@@ -381,6 +381,28 @@ class MonitorTests(unittest.IsolatedAsyncioTestCase):
         await self.monitor.check(NOW)
         self.assertEqual(self.bot.send_message.call_count, 1)
 
+    async def test_multipart_broadcast_spaces_parts_for_private_and_group(self):
+        await self.baseline()
+        self.changed()
+        with patch("schedule_bot.schedule_monitor.format_notifications", return_value=["part one", "part two"]), \
+             patch("schedule_bot.schedule_monitor.asyncio.sleep", new=AsyncMock()) as sleep:
+            await self.monitor.check(NOW)
+        self.assertEqual(self.bot.send_message.call_count, 4)
+        delays = [call.args[0] for call in sleep.call_args_list]
+        self.assertIn(3.1, delays)
+        self.assertIn(1.1, delays)
+
+    async def test_stop_during_multipart_pause_prevents_next_part(self):
+        await self.baseline()
+        self.changed()
+        async def deactivate_during_pause(seconds):
+            if seconds == 3.1:
+                self.app.bot_data[ACTIVE_CHAT_IDS_KEY].clear()
+        with patch("schedule_bot.schedule_monitor.format_notifications", return_value=["part one", "part two"]), \
+             patch("schedule_bot.schedule_monitor.asyncio.sleep", side_effect=deactivate_during_pause):
+            await self.monitor.check(NOW)
+        self.assertEqual(self.bot.send_message.call_count, 1)
+
     async def test_unfinished_baseline_save_stays_absent_and_retries(self):
         with patch.object(self.monitor.store, "save", side_effect=OSError("disk full")), self.assertRaises(OSError):
             await self.monitor.check(NOW)

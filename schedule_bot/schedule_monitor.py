@@ -311,6 +311,10 @@ class ScheduleMonitor:
     async def deliver(self, state: dict, messages: list[str]) -> None:
         for chat_id in sorted(self.active_chats()):
             for index, message in enumerate(messages):
+                if index:
+                    # Multipart updates must respect per-chat/group limits,
+                    # not just the global broadcast rate. Never block polling.
+                    await asyncio.sleep(3.1 if chat_id < 0 else 1.1)
                 if chat_id not in self.active_chats():
                     break  # /stop during a multipart broadcast takes effect immediately.
                 key = f"{chat_id}:{index}"
