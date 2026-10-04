@@ -53,11 +53,12 @@ STUDY_PLAN_RELATIVE_PATH: Final = (
     Path("media") / "study_plan" / "study_plan_2026_2027.png"
 )
 ACTIVE_CHAT_IDS_KEY: Final = "active_chat_ids"
+POLLING_WATCHDOG_TASK_KEY: Final = "polling_watchdog_task"
 SEND_ATTEMPTS: Final = 3
 SEND_CONNECT_TIMEOUT: Final = 20.0
 SEND_READ_TIMEOUT: Final = 30.0
 SEND_WRITE_TIMEOUT: Final = 30.0
-POLLING_WATCHDOG_INTERVAL_SECONDS: Final = 60.0
+POLLING_WATCHDOG_INTERVAL_SECONDS: Final = 20.0
 POLLING_WATCHDOG_STALL_LIMIT: Final = 3
 
 
@@ -126,7 +127,7 @@ def build_application(settings: Settings) -> Application:
     application.add_error_handler(on_error)
     application.post_init = initialize_application
     application.post_stop = stop_monitor
-    application.post_shutdown = stop_monitor
+    application.post_shutdown = shutdown_application
     return application
 
 
@@ -134,11 +135,24 @@ async def initialize_application(application: Application) -> None:
     """Finish startup and start the independent watchdog and schedule monitor."""
 
     await set_commands(application)
-    application.create_task(
+    application.bot_data[POLLING_WATCHDOG_TASK_KEY] = asyncio.create_task(
         polling_watchdog(application),
         name="polling-watchdog",
     )
     start_monitor(application, ACTIVE_CHAT_IDS_KEY)
+
+
+async def shutdown_application(application: Application) -> None:
+    """Stop background work without leaving an un-awaited watchdog task."""
+
+    task = application.bot_data.pop(POLLING_WATCHDOG_TASK_KEY, None)
+    if task is not None:
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+    await stop_monitor(application)
 
 
 async def polling_watchdog(
@@ -155,23 +169,28 @@ async def polling_watchdog(
         try:
             webhook = await application.bot.get_webhook_info()
         except TelegramError as exc:
-            LOGGER.warning("Не удалось проверить очередь обновлений Telegram: %s", exc)
-            continue
+            stalled_checks += 1
+            LOGGER.warning(
+                "Не удалось проверить Telegram API (%s/%s): %s",
+                stalled_checks,
+                stall_limit,
+                exc,
+            )
+        else:
+            pending = webhook.pending_update_count
+            if pending == 0:
+                stalled_checks = 0
+                continue
 
-        pending = webhook.pending_update_count
-        if pending == 0:
-            stalled_checks = 0
-            continue
-
-        stalled_checks += 1
-        LOGGER.warning(
-            "Telegram хранит %s необработанных обновлений (%s/%s)",
-            pending,
-            stalled_checks,
-            stall_limit,
-        )
+            stalled_checks += 1
+            LOGGER.warning(
+                "Telegram хранит %s необработанных обновлений (%s/%s)",
+                pending,
+                stalled_checks,
+                stall_limit,
+            )
         if stalled_checks >= stall_limit:
-            LOGGER.error("Polling не забирает обновления; перезапускаю приложение")
+            LOGGER.error("Связь с Telegram не восстановилась; перезапускаю приложение")
             application.stop_running()
             return
 

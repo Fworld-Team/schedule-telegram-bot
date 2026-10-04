@@ -24,12 +24,32 @@ class PollingWatchdogTests(unittest.TestCase):
         self.assertEqual(application.bot.get_webhook_info.await_count, 3)
         application.stop_running.assert_called_once_with()
 
-    def test_transient_api_error_does_not_count_as_stalled_polling(self):
+    def test_restarts_after_consecutive_api_errors(self):
         application = SimpleNamespace(
             bot=SimpleNamespace(
                 get_webhook_info=AsyncMock(
                     side_effect=[
                         NetworkError("temporary"),
+                        NetworkError("still unavailable"),
+                    ]
+                )
+            ),
+            stop_running=Mock(),
+        )
+
+        with patch("schedule_bot.bot.asyncio.sleep", new=AsyncMock()):
+            asyncio.run(polling_watchdog(application, interval=0, stall_limit=2))
+
+        self.assertEqual(application.bot.get_webhook_info.await_count, 2)
+        application.stop_running.assert_called_once_with()
+
+    def test_successful_check_resets_error_counter(self):
+        application = SimpleNamespace(
+            bot=SimpleNamespace(
+                get_webhook_info=AsyncMock(
+                    side_effect=[
+                        NetworkError("temporary"),
+                        SimpleNamespace(pending_update_count=0),
                         SimpleNamespace(pending_update_count=1),
                         SimpleNamespace(pending_update_count=1),
                     ]
@@ -41,5 +61,5 @@ class PollingWatchdogTests(unittest.TestCase):
         with patch("schedule_bot.bot.asyncio.sleep", new=AsyncMock()):
             asyncio.run(polling_watchdog(application, interval=0, stall_limit=2))
 
-        self.assertEqual(application.bot.get_webhook_info.await_count, 3)
+        self.assertEqual(application.bot.get_webhook_info.await_count, 4)
         application.stop_running.assert_called_once_with()

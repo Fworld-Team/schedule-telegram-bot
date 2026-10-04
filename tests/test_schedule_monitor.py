@@ -11,7 +11,14 @@ from unittest.mock import AsyncMock, Mock, patch
 import httpx
 from telegram.error import BadRequest, Forbidden, TimedOut
 
-from schedule_bot.bot import ACTIVE_CHAT_IDS_KEY, initialize_application, start, stop_command
+from schedule_bot.bot import (
+    ACTIVE_CHAT_IDS_KEY,
+    POLLING_WATCHDOG_TASK_KEY,
+    initialize_application,
+    shutdown_application,
+    start,
+    stop_command,
+)
 from schedule_bot.schedule_monitor import (
     MESSAGE_LIMIT, ScheduleMonitor, Snapshot, StateStore, TASK_KEY, _units,
     diff_schedule, download, fetch_snapshot, format_notifications, schedule_monitor,
@@ -425,23 +432,21 @@ class MonitorTests(unittest.IsolatedAsyncioTestCase):
         sleep.assert_called_once_with(1800)
         self.bot.send_message.assert_not_awaited()
 
-    async def test_lifecycle_starts_watchdog_unchanged_and_cancels_monitor(self):
-        def close_watchdog(coroutine, **kwargs):
-            coroutine.close()
-        self.app.create_task = Mock(side_effect=close_watchdog)
+    async def test_lifecycle_starts_and_cancels_background_tasks(self):
         async def forever(*args):
             await asyncio.Event().wait()
         with patch("schedule_bot.bot.set_commands", new=AsyncMock()), \
              patch("schedule_bot.schedule_monitor.schedule_monitor", side_effect=forever):
             await initialize_application(self.app)
-            task = self.app.bot_data[TASK_KEY]
-            self.assertEqual(task.get_name(), "schedule-monitor")
-            self.app.create_task.assert_called_once()
-            self.assertEqual(self.app.create_task.call_args.kwargs["name"], "polling-watchdog")
+            monitor_task = self.app.bot_data[TASK_KEY]
+            watchdog_task = self.app.bot_data[POLLING_WATCHDOG_TASK_KEY]
+            self.assertEqual(monitor_task.get_name(), "schedule-monitor")
+            self.assertEqual(watchdog_task.get_name(), "polling-watchdog")
             await asyncio.sleep(0)
-            await stop_monitor(self.app)
-            await stop_monitor(self.app)
-            self.assertTrue(task.cancelled())
+            await shutdown_application(self.app)
+            await shutdown_application(self.app)
+            self.assertTrue(monitor_task.cancelled())
+            self.assertTrue(watchdog_task.cancelled())
 
 
 class HTTPTests(unittest.IsolatedAsyncioTestCase):
