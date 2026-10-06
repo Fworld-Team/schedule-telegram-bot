@@ -8,6 +8,7 @@ import logging
 from pathlib import Path
 from typing import Final
 
+import httpx
 from telegram import (
     BotCommand,
     BotCommandScopeChat,
@@ -16,6 +17,7 @@ from telegram import (
     Update,
 )
 from telegram.error import BadRequest, NetworkError, TelegramError
+from telegram.request import HTTPXRequest
 from telegram.ext import (
     Application,
     ApplicationHandlerStop,
@@ -58,8 +60,9 @@ SEND_ATTEMPTS: Final = 3
 SEND_CONNECT_TIMEOUT: Final = 20.0
 SEND_READ_TIMEOUT: Final = 30.0
 SEND_WRITE_TIMEOUT: Final = 30.0
-POLLING_WATCHDOG_INTERVAL_SECONDS: Final = 20.0
-POLLING_WATCHDOG_STALL_LIMIT: Final = 3
+POLLING_WATCHDOG_INTERVAL_SECONDS: Final = 10.0
+POLLING_WATCHDOG_BACKLOG_LIMIT: Final = 2
+POLLING_WATCHDOG_API_ERROR_LIMIT: Final = 3
 
 
 DAY_BUTTONS: Final[dict[str, int]] = {
@@ -106,7 +109,20 @@ def build_application(settings: Settings) -> Application:
     )
     if settings.proxy_url:
         # Polling and ordinary Bot API requests use separate HTTP clients.
-        builder.proxy(settings.proxy_url).get_updates_proxy(settings.proxy_url)
+        # XHTTP tunnels can leave a reused CONNECT stream half-open. Polling is
+        # low-volume, so a fresh proxy stream for every long-poll request is a
+        # safer trade-off than keeping one stale connection indefinitely.
+        polling_request = HTTPXRequest(
+            connection_pool_size=2,
+            proxy=settings.proxy_url,
+            httpx_kwargs={
+                "limits": httpx.Limits(
+                    max_connections=2,
+                    max_keepalive_connections=0,
+                )
+            },
+        )
+        builder.proxy(settings.proxy_url).get_updates_request(polling_request)
     application = builder.build()
     application.bot_data["settings"] = settings
     application.bot_data["storage"] = storage
@@ -159,37 +175,43 @@ async def polling_watchdog(
     application: Application,
     *,
     interval: float = POLLING_WATCHDOG_INTERVAL_SECONDS,
-    stall_limit: int = POLLING_WATCHDOG_STALL_LIMIT,
+    backlog_limit: int = POLLING_WATCHDOG_BACKLOG_LIMIT,
+    api_error_limit: int = POLLING_WATCHDOG_API_ERROR_LIMIT,
 ) -> None:
     """Restart the container when Telegram updates remain uncollected."""
 
-    stalled_checks = 0
+    backlog_checks = 0
+    api_error_checks = 0
     while True:
         await asyncio.sleep(interval)
         try:
             webhook = await application.bot.get_webhook_info()
         except TelegramError as exc:
-            stalled_checks += 1
+            api_error_checks += 1
             LOGGER.warning(
                 "Не удалось проверить Telegram API (%s/%s): %s",
-                stalled_checks,
-                stall_limit,
+                api_error_checks,
+                api_error_limit,
                 exc,
             )
         else:
+            api_error_checks = 0
             pending = webhook.pending_update_count
             if pending == 0:
-                stalled_checks = 0
+                backlog_checks = 0
                 continue
 
-            stalled_checks += 1
+            backlog_checks += 1
             LOGGER.warning(
                 "Telegram хранит %s необработанных обновлений (%s/%s)",
                 pending,
-                stalled_checks,
-                stall_limit,
+                backlog_checks,
+                backlog_limit,
             )
-        if stalled_checks >= stall_limit:
+        if (
+            backlog_checks >= backlog_limit
+            or api_error_checks >= api_error_limit
+        ):
             LOGGER.error("Связь с Telegram не восстановилась; перезапускаю приложение")
             application.stop_running()
             return

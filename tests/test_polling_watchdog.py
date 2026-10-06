@@ -19,7 +19,14 @@ class PollingWatchdogTests(unittest.TestCase):
             stop_running=Mock(),
         )
 
-        asyncio.run(polling_watchdog(application, interval=0, stall_limit=3))
+        asyncio.run(
+            polling_watchdog(
+                application,
+                interval=0,
+                backlog_limit=3,
+                api_error_limit=3,
+            )
+        )
 
         self.assertEqual(application.bot.get_webhook_info.await_count, 3)
         application.stop_running.assert_called_once_with()
@@ -38,7 +45,14 @@ class PollingWatchdogTests(unittest.TestCase):
         )
 
         with patch("schedule_bot.bot.asyncio.sleep", new=AsyncMock()):
-            asyncio.run(polling_watchdog(application, interval=0, stall_limit=2))
+            asyncio.run(
+                polling_watchdog(
+                    application,
+                    interval=0,
+                    backlog_limit=2,
+                    api_error_limit=2,
+                )
+            )
 
         self.assertEqual(application.bot.get_webhook_info.await_count, 2)
         application.stop_running.assert_called_once_with()
@@ -59,7 +73,14 @@ class PollingWatchdogTests(unittest.TestCase):
         )
 
         with patch("schedule_bot.bot.asyncio.sleep", new=AsyncMock()):
-            asyncio.run(polling_watchdog(application, interval=0, stall_limit=2))
+            asyncio.run(
+                polling_watchdog(
+                    application,
+                    interval=0,
+                    backlog_limit=2,
+                    api_error_limit=2,
+                )
+            )
 
         self.assertEqual(application.bot.get_webhook_info.await_count, 4)
         application.stop_running.assert_called_once_with()

@@ -32,13 +32,19 @@ class ProxyTests(unittest.TestCase):
             (root / "config.json").write_text(json.dumps(VALID_CONFIG))
             with patch.dict(os.environ, {"BOT_PROXY_URL": "http://172.30.80.1:1081"}):
                 settings = Settings.load(root)
-            proxies = []
+            requests = []
             original_init = HTTPXRequest.__init__
 
             def capture(request, *args, **kwargs):
-                proxies.append(kwargs.get("proxy"))
+                requests.append(kwargs)
                 original_init(request, *args, **kwargs)
 
             with patch("schedule_bot.bot.load_bot_token", return_value="123456:" + "A" * 30), patch.object(HTTPXRequest, "__init__", capture):
                 build_application(settings)
-            self.assertEqual(proxies, [settings.proxy_url, settings.proxy_url])
+            self.assertEqual(
+                [request.get("proxy") for request in requests],
+                [settings.proxy_url, settings.proxy_url],
+            )
+            polling_limits = requests[0]["httpx_kwargs"]["limits"]
+            self.assertEqual(polling_limits.max_connections, 2)
+            self.assertEqual(polling_limits.max_keepalive_connections, 0)
