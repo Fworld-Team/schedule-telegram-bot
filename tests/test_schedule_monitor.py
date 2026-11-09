@@ -9,7 +9,7 @@ import unittest
 from unittest.mock import AsyncMock, Mock, patch
 
 import httpx
-from telegram.error import BadRequest, Forbidden, TimedOut
+from telegram.error import BadRequest, Forbidden, RetryAfter, TimedOut
 
 from schedule_bot.bot import (
     ACTIVE_CHAT_IDS_KEY,
@@ -166,16 +166,60 @@ class MonitorTests(unittest.IsolatedAsyncioTestCase):
             await self.monitor.check(NOW)
             self.assertNotEqual(self.monitor.store.load()["pdf_hash"], previous_hash)
             restarted = ScheduleMonitor(self.app, ACTIVE_CHAT_IDS_KEY, client)
-            await restarted.check(NOW)
-        self.assertEqual(len(requests), 4)
+            self.assertEqual(await restarted.check(NOW), "already-checked")
+            html = html.replace(b"1790239252_ieiu-3.pdf", b"replacement_ieiu-3.pdf")
+            self.assertEqual(await restarted.check(NOW + timedelta(days=1)), "unchanged")
+            self.assertTrue(requests[-1].url.path.endswith("/replacement_ieiu-3.pdf"))
+        self.assertEqual(len(requests), 6)
         self.assertEqual(self.bot.send_message.call_count, 0)
+
+    async def test_real_schedule_update_after_restart_at_same_or_new_url(self):
+        self.patch_fetch.stop()
+        fixture = Path(__file__).parent / "fixtures/timacad"
+        september = (fixture / "schedule.pdf").read_bytes()
+        october = (fixture / "schedule-2026-10-27.pdf").read_bytes()
+        original_html = (fixture / "source.html").read_bytes()
+        original_path = b"/uploads/files/20260924/1790239252_ieiu-3.pdf"
+        new_path = b"/uploads/files/20261027/1793083289_ieiu-3.pdf"
+        for change_url in (False, True):
+            with self.subTest(change_url=change_url), TemporaryDirectory() as directory:
+                self.monitor.store = StateStore(Path(directory))
+                self.bot.send_message.reset_mock()
+                html, body = original_html, september
+                requested = []
+
+                def handler(request):
+                    requested.append(request.url.path)
+                    return httpx.Response(200, content=body if request.url.path.endswith(".pdf") else html)
+
+                async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+                    self.monitor.client = client
+                    self.assertEqual(await self.monitor.check(NOW), "baseline")
+                    self.bot.send_message.assert_not_awaited()
+                    body = october
+                    if change_url:
+                        html = html.replace(original_path, new_path)
+                    restarted = ScheduleMonitor(self.app, ACTIVE_CHAT_IDS_KEY, client)
+                    restarted.store = StateStore(Path(directory))
+                    tomorrow = NOW + timedelta(days=1)
+                    self.assertEqual(await restarted.check(tomorrow), "changed")
+                    self.assertEqual(await restarted.check(tomorrow), "already-checked")
+                    self.assertEqual(requested[1], original_path.decode())
+                    self.assertEqual(requested[3], (new_path if change_url else original_path).decode())
+                    self.assertEqual(len(requested), 4)
+                    calls = self.bot.send_message.await_args_list
+                    self.assertCountEqual([c.kwargs["chat_id"] for c in calls], [42, -10099])
+                    self.assertEqual(calls[0].kwargs["text"], calls[1].kwargs["text"])
+                    self.assertIn(requested[3], calls[0].kwargs["text"])
 
     async def test_full_pipeline_http_and_pdf_failures_send_nothing_offline(self):
         await self.baseline()
         self.patch_fetch.stop()
         previous = self.monitor.store.path.read_bytes()
-        for broken_stage in ("page", "pdf", "html", "corrupt"):
+        for broken_stage in ("connect", "page", "pdf", "html", "corrupt"):
             def handler(request):
+                if broken_stage == "connect":
+                    raise httpx.ConnectTimeout("offline probe", request=request)
                 if not request.url.path.endswith(".pdf"):
                     return httpx.Response(503) if broken_stage == "page" else httpx.Response(200, text=HTML)
                 if broken_stage == "pdf":
@@ -319,6 +363,23 @@ class MonitorTests(unittest.IsolatedAsyncioTestCase):
         await self.monitor.check(NOW)
         self.assertEqual(self.storage.active_chat_ids(), set())
         self.assertEqual(self.app.bot_data[ACTIVE_CHAT_IDS_KEY], set())
+
+    async def test_rate_limit_retries_only_rejected_delivery_after_restart(self):
+        await self.baseline()
+        self.changed()
+        # First chat accepted, second explicitly rejected by Telegram.
+        self.bot.send_message.side_effect = [None, RetryAfter(2)]
+        with self.assertRaises(RetryAfter):
+            await self.monitor.check(NOW)
+        state = self.monitor.store.load()
+        self.assertEqual(state["last_successful_check"], "2026-09-27")
+        self.assertEqual(state["pending"]["attempted"], ["-10099:0"])
+        self.bot.send_message.side_effect = None
+        restarted = ScheduleMonitor(self.app, ACTIVE_CHAT_IDS_KEY, None)
+        self.assertEqual(await restarted.check(NOW), "changed")
+        self.assertEqual([c.kwargs["chat_id"] for c in self.bot.send_message.await_args_list],
+                         [-10099, 42, 42])
+        self.assertNotIn("pending", restarted.store.load())
 
     async def test_ambiguous_network_timeout_not_retried_or_deactivated(self):
         await self.baseline()

@@ -18,7 +18,7 @@ import tempfile
 from uuid import uuid4
 
 import httpx
-from telegram.error import BadRequest, Forbidden, TelegramError
+from telegram.error import BadRequest, Forbidden, RetryAfter, TelegramError
 
 from .schedule_pdf import (
     DAYS, GROUPS, MAX_PDF_BYTES, PAGE_URL, Schedule, ScheduleParseError,
@@ -332,6 +332,14 @@ class ScheduleMonitor:
                         disable_web_page_preview=True, connect_timeout=10,
                         read_timeout=20, write_timeout=20, pool_timeout=10,
                     )
+                except RetryAfter:
+                    # Telegram explicitly rejected this request. Only a known
+                    # rejection can be safely retried without duplicate risk.
+                    journal = deepcopy(state)
+                    journal["pending"]["attempted"].remove(key)
+                    self.store.save(journal)
+                    state["pending"] = journal["pending"]
+                    raise
                 except Forbidden:
                     self.deactivate(chat_id)
                     LOGGER.warning("Schedule monitor deactivated inaccessible chat %s", chat_id)
@@ -357,6 +365,12 @@ async def schedule_monitor(application, active_chat_ids_key: str) -> None:
             delay = WAKE_SECONDS
             try:
                 await monitor.check()
+            except RetryAfter as exc:
+                retry_after = exc.retry_after
+                if isinstance(retry_after, timedelta):
+                    retry_after = retry_after.total_seconds()
+                delay = max(RETRY_SECONDS, retry_after)
+                LOGGER.warning("Schedule monitor rate limited; retrying in %s seconds", delay)
             except Exception:
                 LOGGER.exception("Schedule monitor check failed; baseline retained")
                 delay = RETRY_SECONDS
