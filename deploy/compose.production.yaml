@@ -4,7 +4,7 @@ services:
     environment:
       BOT_PROXY_URL: http://172.30.80.1:1081
       # Change in GitHub after validating the widget on a test bot.
-      BOT_SCHEDULE_WIDGETS: "0"
+      BOT_SCHEDULE_WIDGETS: "1"
       HEALTHCHECK_TELEGRAM: "1"
     healthcheck:
       interval: 5m
