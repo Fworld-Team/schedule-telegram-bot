@@ -267,7 +267,6 @@ class ScheduleMonitor:
         self.settings = application.bot_data["settings"]
         self.store = StateStore(self.settings.runtime_data_directory)
         self.lock = asyncio.Lock()
-        self._refreshed_revision = None
 
     def active_chats(self) -> set[int]:
         # Same authoritative in-memory set used by activity_gate, populated
@@ -289,11 +288,16 @@ class ScheduleMonitor:
             today = now.date().isoformat()
             state = self.store.load()
             if state["last_successful_check"] and state["last_successful_check"] >= today:
-                await self.refresh_widgets(state)
+                await self.refresh_widgets(state, now.date())
                 return "already-checked"
             if now.hour < DAILY_CHECK_HOUR:
+                await self.refresh_widgets(state, now.date())
                 return "not-due"
-            snapshot = await fetch_snapshot(self.client)
+            try:
+                snapshot = await fetch_snapshot(self.client)
+            except (httpx.HTTPError, ScheduleParseError, TimeoutError):
+                await self.refresh_widgets(state, now.date())
+                raise
             groups = validate_schedule(snapshot.groups)
             old = state["groups"]
             if old:
@@ -315,22 +319,18 @@ class ScheduleMonitor:
                         "pdf_url": snapshot.pdf_url, "pdf_hash": snapshot.pdf_hash,
                         "groups": groups, "widget_weeks": snapshot.widget_weeks}
             self.store.save(accepted)
-            await self.refresh_widgets(accepted)
+            await self.refresh_widgets(accepted, now.date())
             if old is None:
                 LOGGER.info("Schedule monitor baseline initialized")
             else:
                 LOGGER.info("Schedule monitor check accepted: %s changed slots", len(changes))
             return "changed" if changes else "baseline" if old is None else "unchanged"
 
-    async def refresh_widgets(self, state: dict) -> None:
+    async def refresh_widgets(self, state: dict, today: date) -> None:
         cards = self.application.bot_data.get("schedule_widget_cards")
         weekly = state.get("widget_weeks")
-        if cards is None or weekly is None:
-            return
-        revision = digest(weekly)
-        if revision != self._refreshed_revision:
-            await cards.refresh(weekly, revision, self.active_chats)
-            self._refreshed_revision = revision
+        if cards is not None and weekly is not None:
+            await cards.refresh(weekly, today, self.active_chats)
 
     async def deliver(self, state: dict, messages: list[str]) -> None:
         for chat_id in sorted(self.active_chats()):

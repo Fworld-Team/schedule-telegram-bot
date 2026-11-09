@@ -14,7 +14,6 @@ from schedule_bot.bot import (
     ACTIVE_CHAT_IDS_KEY,
     MAIN_KEYBOARD,
     SCHEDULE_KEYBOARD,
-    SCHEDULE_INLINE_KEYBOARD,
     schedule_callback,
     activity_gate,
     help_command,
@@ -172,8 +171,12 @@ class HandlerTests(unittest.TestCase):
             effective_message=message,
             effective_chat=SimpleNamespace(id=-100, type="group"),
         )
-        asyncio.run(route_text(update, self.context()))
-        self.assertIs(message.reply_markups[-1], SCHEDULE_INLINE_KEYBOARD)
+        context = self.context()
+        context.bot = SimpleNamespace(username="ScheduleTestBot")
+        asyncio.run(route_text(update, context))
+        url = "https://t.me/ScheduleTestBot?start=schedule"
+        buttons = [button for row in message.reply_markups[-1].inline_keyboard for button in row]
+        self.assertIn(url, [button.url for button in buttons])
 
         query = AsyncMock()
         update.callback_query = query
@@ -183,12 +186,11 @@ class HandlerTests(unittest.TestCase):
         query.edit_message_reply_markup.assert_not_awaited()
 
         query.data = "sch:widget"
-        context = self.context()
         cards = AsyncMock()
         context.application.bot_data["schedule_widget_cards"] = cards
         asyncio.run(schedule_callback(update, context))
         self.assertIn("личном чате", message.messages[-1])
-        self.assertIsNone(message.reply_markups[-1])
+        self.assertEqual(message.reply_markups[-1].inline_keyboard[0][0].url, url)
         cards.open.assert_not_awaited()
 
         Image.new("RGB", (4, 4), "white").save(self.settings.schedules_directory / "monday.png")
@@ -209,6 +211,20 @@ class HandlerTests(unittest.TestCase):
         asyncio.run(route_text(update, context))
         cards.open.assert_awaited_once_with(100, thread_id=None)
         self.assertEqual(message.messages, [])
+
+    def test_group_schedule_link_opens_widget_after_private_start(self) -> None:
+        message = FakeMessage("/start schedule")
+        update = SimpleNamespace(
+            effective_message=message, effective_chat=SimpleNamespace(id=100, type="private"),
+        )
+        context = self.context()
+        context.args = ["schedule"]
+        cards = AsyncMock()
+        context.application.bot_data["schedule_widget_cards"] = cards
+        asyncio.run(start(update, context))
+        self.assertEqual(context.application.bot_data[ACTIVE_CHAT_IDS_KEY], {100})
+        self.assertIs(message.reply_markups[0], MAIN_KEYBOARD)
+        cards.open.assert_awaited_once_with(100, thread_id=None)
 
     def test_widget_without_verified_week_data_does_not_guess_or_call_api(self) -> None:
         message = self.run_button("🗓️ Интерактивное расписание", date(2026, 11, 9))

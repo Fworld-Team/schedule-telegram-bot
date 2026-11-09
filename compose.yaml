@@ -10,6 +10,7 @@ services:
     environment:
       ADMIN_USER_IDS: "${ADMIN_USER_IDS:?Set ADMIN_USER_IDS in .env}"
       BOT_DATA_DIR: /data
+      BOT_SCHEDULE_WIDGETS: "${BOT_SCHEDULE_WIDGETS:-0}"
       TELEGRAM_BOT_TOKEN_FILE: /run/secrets/telegram_bot_token
       BOT_PROXY_URL: http://172.30.80.1:1081
       PYTHONDONTWRITEBYTECODE: "1"

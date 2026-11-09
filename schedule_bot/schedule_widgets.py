@@ -41,9 +41,10 @@ class ScheduleWidgetCards:
         self.store = StateStore(settings.runtime_data_directory)
         self.zone = timezone(timedelta(hours=settings.utc_offset_hours))
         self.lock = asyncio.Lock()
+        self._refreshed_revision: str | None = None
 
-    def anchor(self) -> dict:
-        monday, kind, _ = self.storage.week_source(datetime.now(self.zone).date())
+    def anchor(self, today: date) -> dict:
+        monday, kind, _ = self.storage.week_source(today)
         return {"anchor": monday.isoformat(), "kind": kind.value}
 
     async def open(self, chat_id: int, *, thread_id: int | None = None) -> bool:
@@ -52,19 +53,24 @@ class ScheduleWidgetCards:
                 weekly = self.store.load().get("widget_weeks")
                 if weekly is None:
                     return False
-                await self.send(chat_id, weekly, digest(weekly), self.anchor(), thread_id=thread_id)
+                anchor = self.anchor(datetime.now(self.zone).date())
+                await self.send(chat_id, weekly, anchor, thread_id=thread_id)
             except (ValueError, OSError, TelegramError) as exc:
                 LOGGER.warning("Schedule widget unavailable: %s", type(exc).__name__)
                 return False
         return True
 
-    async def send(self, chat_id, weekly, revision, anchor, *, thread_id=None, silent=False):
+    async def send(self, chat_id, weekly, anchor, *, thread_id=None, silent=False):
+        revision = digest({"weeks": weekly, "anchor": anchor})
         html = build_widget_html(weekly, anchor_monday=date.fromisoformat(anchor["anchor"]), anchor_kind=anchor["kind"])
         message_id = await self.transport.send(chat_id, html, thread_id=thread_id, silent=silent)
         self.storage.save_schedule_widget_card(chat_id, message_id, json.dumps(weekly), revision, thread_id)
 
-    async def refresh(self, weekly: dict, revision: str, active_chats) -> None:
-        anchor = self.anchor()
+    async def refresh(self, weekly: dict, today: date, active_chats) -> None:
+        anchor = self.anchor(today)
+        revision = digest({"weeks": weekly, "anchor": anchor})
+        if revision == self._refreshed_revision:
+            return
         for card in self.storage.schedule_widget_cards():
             chat_id = card["chat_id"]
             if chat_id <= 0 or chat_id not in active_chats() or card["revision"] == revision:
@@ -77,6 +83,7 @@ class ScheduleWidgetCards:
                     continue
                 await self.refresh_card(current, weekly, revision, anchor, active_chats)
             await asyncio.sleep(0.1)
+        self._refreshed_revision = revision
 
     async def refresh_card(self, card, weekly, revision, anchor, active_chats):
         chat_id, message_id, base = card["chat_id"], card["message_id"], card["base"]
@@ -98,6 +105,6 @@ class ScheduleWidgetCards:
                     if "not modified" in str(exc).lower():
                         return
             if chat_id in active_chats():
-                await self.send(chat_id, weekly, revision, anchor, thread_id=card["thread_id"], silent=True)
+                await self.send(chat_id, weekly, anchor, thread_id=card["thread_id"], silent=True)
         except (TelegramError, ValueError) as exc:
             LOGGER.warning("Schedule widget refresh unavailable: %s", type(exc).__name__)

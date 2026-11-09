@@ -12,9 +12,11 @@ import httpx
 from telegram.error import BadRequest, EndPointNotFound, TimedOut
 
 from schedule_bot.calendar import WeekKind
-from schedule_bot.schedule_monitor import ScheduleMonitor, digest
+from schedule_bot.admin import clear_week_override, set_week_kind
+from schedule_bot.schedule_monitor import ScheduleMonitor
 from schedule_bot.schedule_widgets import ScheduleWidgetCards
 from schedule_bot.storage import BotStorage
+from tests.test_schedule_monitor import PDF_URL, sample_groups
 from tests.test_widget_html import sample
 
 
@@ -30,10 +32,11 @@ class ScheduleWidgetTests(unittest.IsolatedAsyncioTestCase):
         self.bot = AsyncMock()
         self.cards = ScheduleWidgetCards(self.bot, self.storage, self.settings)
         self.weekly = sample()
+        self.today = date(2026, 11, 9)
 
     async def publish_base(self):
         self.bot.do_api_request.return_value = {"message_id": 50}
-        await self.cards.send(12, self.weekly, digest(self.weekly), self.cards.anchor())
+        await self.cards.send(12, self.weekly, self.cards.anchor(self.today))
         self.bot.do_api_request.reset_mock()
 
     async def test_no_data_never_attempts_telegram(self):
@@ -43,14 +46,14 @@ class ScheduleWidgetTests(unittest.IsolatedAsyncioTestCase):
     async def test_definitive_edit_failures_create_one_replacement(self):
         for error in (BadRequest("message to edit not found"), EndPointNotFound("edit unavailable")):
             with self.subTest(error=error):
+                self.cards = ScheduleWidgetCards(self.bot, self.storage, self.settings)
                 self.bot.do_api_request.side_effect = None
                 await self.publish_base()
                 changed = deepcopy(self.weekly)
                 changed["ДЭ 23-24"]["upper"][0].clear()
-                revision = digest(changed)
                 self.bot.do_api_request.side_effect = [error, {"message_id": 51}]
-                await self.cards.refresh(changed, revision, lambda: {12})
-                await self.cards.refresh(changed, revision, lambda: {12})
+                await self.cards.refresh(changed, self.today, lambda: {12})
+                await self.cards.refresh(changed, self.today, lambda: {12})
                 self.assertEqual([call.args[0] for call in self.bot.do_api_request.await_args_list],
                                  ["edit_message_widget_data", "send_widget"])
                 self.assertEqual(self.storage.schedule_widget_card(12)["message_id"], 51)
@@ -63,7 +66,7 @@ class ScheduleWidgetTests(unittest.IsolatedAsyncioTestCase):
                 for day in range(6):
                     days[day] = [{**days[0][0], "subject": "Изменение " * 15}]
         self.bot.do_api_request.return_value = {"message_id": 52}
-        await self.cards.refresh(changed, digest(changed), lambda: {12})
+        await self.cards.refresh(changed, self.today, lambda: {12})
         self.assertEqual(self.bot.do_api_request.await_count, 1)
         self.assertEqual(self.bot.do_api_request.await_args.args, ("send_widget",))
         self.assertTrue(self.bot.do_api_request.await_args.kwargs["api_kwargs"]["disable_notification"])
@@ -72,21 +75,60 @@ class ScheduleWidgetTests(unittest.IsolatedAsyncioTestCase):
         await self.publish_base()
         changed = deepcopy(self.weekly)
         changed["ДЭ 23-24"]["upper"][0].clear()
-        revision = digest(changed)
         self.bot.do_api_request.side_effect = TimedOut()
-        await self.cards.refresh(changed, revision, lambda: {12})
+        await self.cards.refresh(changed, self.today, lambda: {12})
         restarted = ScheduleWidgetCards(self.bot, self.storage, self.settings)
-        await restarted.refresh(changed, revision, lambda: {12})
+        await restarted.refresh(changed, self.today, lambda: {12})
         self.assertEqual(self.bot.do_api_request.await_count, 1)
         self.assertEqual(self.storage.schedule_widget_card(12)["message_id"], 50)
 
     async def test_unchanged_or_stopped_chat_gets_no_card_update(self):
         await self.publish_base()
-        await self.cards.refresh(self.weekly, digest(self.weekly), lambda: {12})
+        await self.cards.refresh(self.weekly, self.today, lambda: {12})
         changed = deepcopy(self.weekly)
         changed["ДЭ 23-24"]["upper"][0].clear()
-        await self.cards.refresh(changed, digest(changed), set)
+        await self.cards.refresh(changed, self.today, set)
         self.bot.do_api_request.assert_not_awaited()
+
+    async def test_admin_week_correction_and_removal_refresh_cached_card(self):
+        app = SimpleNamespace(bot=self.bot, bot_data={
+            "settings": self.settings, "storage": self.storage,
+            "schedule_widget_cards": self.cards, "active": {12},
+        })
+        self.cards.store.save({
+            "schema": 1, "last_successful_check": "2026-11-08",
+            "pdf_url": PDF_URL, "groups": sample_groups(), "widget_weeks": self.weekly,
+        })
+        await self.publish_base()
+        original_kind = self.storage.week_kind(self.today)
+        corrected_kind = WeekKind.LOWER if original_kind is WeekKind.UPPER else WeekKind.UPPER
+        update = SimpleNamespace(
+            callback_query=SimpleNamespace(data=f"week:{corrected_kind.value}"),
+            effective_user=SimpleNamespace(id=42), effective_message=AsyncMock(),
+        )
+        context = SimpleNamespace(application=app)
+        self.bot.do_api_request.return_value = True
+        now = datetime(2026, 11, 9, 5, tzinfo=timezone.utc)  # 08:00 local, before the PDF run.
+        monitor = ScheduleMonitor(app, "active", client=None)
+        with patch("schedule_bot.schedule_monitor.fetch_snapshot", new_callable=AsyncMock) as fetch, \
+             patch("schedule_bot.admin._guard_callback", new=AsyncMock(return_value=True)), \
+             patch("schedule_bot.admin._today", return_value=self.today), \
+             patch("schedule_bot.admin._send_admin_menu", new=AsyncMock()):
+            self.assertEqual(await monitor.check(now), "not-due")
+            self.bot.do_api_request.assert_not_awaited()
+            await set_week_kind(update, context)
+            await monitor.check(now)
+            await monitor.check(now)
+            await clear_week_override(update, context)
+            await monitor.check(now)
+            await monitor.check(now)
+            fetch.assert_not_awaited()
+        calls = self.bot.do_api_request.await_args_list
+        self.assertEqual([call.args[0] for call in calls], ["edit_message_widget_data"] * 2)
+        self.assertEqual([call.kwargs["api_kwargs"]["message_id"] for call in calls], [50, 50])
+        states = [json.loads(call.kwargs["api_kwargs"]["public_data"]) for call in calls]
+        self.assertEqual([state["kind"] for state in states], [corrected_kind.value, original_kind.value])
+        self.assertEqual([state["patches"] for state in states], [[], []])
 
     async def test_real_pdf_to_cached_card_to_update_without_extra_downloads(self):
         fixture = Path(__file__).parent / "fixtures/timacad"

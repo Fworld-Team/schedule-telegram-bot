@@ -19,6 +19,7 @@ from telegram import (
     Update,
 )
 from telegram.error import BadRequest, NetworkError, TelegramError
+from telegram.helpers import create_deep_linked_url
 from telegram.request import HTTPXRequest
 from telegram.ext import (
     Application,
@@ -53,6 +54,7 @@ TODAY_BUTTON: Final = "📅 Сегодня"
 SCHEDULE_BUTTON: Final = "📆 Расписание"
 WIDGET_BUTTON: Final = "🗓️ Интерактивное расписание"
 BACK_BUTTON: Final = "↩️ Назад"
+SCHEDULE_START_PAYLOAD: Final = "schedule"
 STUDY_PLAN_BUTTON: Final = "📚 Учебный план"
 ASSESSMENTS_BUTTON: Final = "🎓 Экзамены"
 MAP_BUTTON: Final = "🗺️ Карта"
@@ -105,16 +107,24 @@ SCHEDULE_KEYBOARD = ReplyKeyboardMarkup(
     input_field_placeholder="Выберите день",
 )
 
-# In groups do not replace everyone's reply keyboard with a submenu.
-SCHEDULE_INLINE_KEYBOARD = InlineKeyboardMarkup([
-    [InlineKeyboardButton("📅 Сегодня", callback_data="sch:today")],
-    [InlineKeyboardButton(text, callback_data="sch:" + text)
-     for text in ("Пн", "Вт", "Ср")],
-    [InlineKeyboardButton(text, callback_data="sch:" + text)
-     for text in ("Чт", "Пт")],
-    [InlineKeyboardButton("Интерактивное расписание", callback_data="sch:widget")],
-    [InlineKeyboardButton("Назад", callback_data="sch:back")],
-])
+def _private_schedule_button(username: str) -> InlineKeyboardButton:
+    return InlineKeyboardButton(
+        "Открыть карточку в личке",
+        url=create_deep_linked_url(username, SCHEDULE_START_PAYLOAD),
+    )
+
+
+def _group_schedule_keyboard(username: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton(TODAY_BUTTON, callback_data="sch:today")],
+        [InlineKeyboardButton(text, callback_data="sch:" + text)
+         for text in ("Пн", "Вт", "Ср")],
+        [InlineKeyboardButton(text, callback_data="sch:" + text)
+         for text in ("Чт", "Пт")],
+        [_private_schedule_button(username)],
+        [InlineKeyboardButton("Назад", callback_data="sch:back")],
+    ])
+
 
 WEEK_KIND_LABELS: Final[dict[WeekKind, str]] = {
     WeekKind.UPPER: "верхняя",
@@ -315,6 +325,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "Откройте «Расписание» и выберите день, чтобы получить фотографию занятий.",
         reply_markup=MAIN_KEYBOARD,
     )
+    if getattr(context, "args", None) == [SCHEDULE_START_PAYLOAD] and update.effective_chat.type == "private":
+        await _send_widget_or_fallback(update, context)
 
 
 async def stop_command(
@@ -391,7 +403,8 @@ async def route_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
     text = message.text.strip()
     if text == SCHEDULE_BUTTON:
-        submenu = SCHEDULE_INLINE_KEYBOARD if _is_group_chat(update) else SCHEDULE_KEYBOARD
+        submenu = (_group_schedule_keyboard(context.bot.username)
+                   if _is_group_chat(update) else SCHEDULE_KEYBOARD)
         await message.reply_text("Выберите день или интерактивное расписание.", reply_markup=submenu)
     elif text == BACK_BUTTON:
         await message.reply_text(
@@ -457,10 +470,16 @@ async def _send_widget_or_fallback(
         chat.id, thread_id=getattr(message, "message_thread_id", None)
     ):
         return
-    text = ("Telegram пока открывает карточки только в личном чате с ботом."
-            if _is_group_chat(update) else
-            "Карточка расписания сейчас недоступна. Выберите день обычной кнопкой.")
-    await message.reply_text(text, reply_markup=None if _is_group_chat(update) else SCHEDULE_KEYBOARD)
+    if _is_group_chat(update):
+        await message.reply_text(
+            "Интерактивное расписание доступно в личном чате с ботом.",
+            reply_markup=InlineKeyboardMarkup([[_private_schedule_button(context.bot.username)]]),
+        )
+    else:
+        await message.reply_text(
+            "Карточка расписания сейчас недоступна. Выберите день обычной кнопкой.",
+            reply_markup=SCHEDULE_KEYBOARD,
+        )
 
 
 async def _disable_current_chat(

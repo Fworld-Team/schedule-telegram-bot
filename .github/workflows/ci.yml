@@ -31,6 +31,22 @@ jobs:
         run: |
           sudo install -m 0755 deploy/server/fworld-deploy-poll /usr/local/sbin/fworld-deploy-poll
           systemd-analyze verify deploy/server/fworld-deploy.service deploy/server/fworld-deploy.timer
+      - name: Verify widget flags in Compose
+        env:
+          ADMIN_USER_IDS: "123456789"
+          BOT_DATA_VOLUME: fworld_bot_data
+        run: |
+          docker compose -f compose.yaml config --format json |
+            jq -e '.services.bot.environment.BOT_SCHEDULE_WIDGETS == "0"'
+          BOT_SCHEDULE_WIDGETS=1 docker compose -f compose.yaml config --format json |
+            jq -e '.services.bot.environment.BOT_SCHEDULE_WIDGETS == "1"'
+          production_widget_flag() {
+            docker compose -f compose.yaml -f deploy/compose.production.yaml config --format json |
+              jq -er '.services.bot.environment.BOT_SCHEDULE_WIDGETS | select(. == "0" or . == "1")'
+          }
+          disabled="$(BOT_SCHEDULE_WIDGETS=0 production_widget_flag)"
+          enabled="$(BOT_SCHEDULE_WIDGETS=1 production_widget_flag)"
+          test "$disabled" = "$enabled"
       - run: docker build -t schedule-telegram-bot:ci .
       - name: Validate the unprivileged, read-only image
         run: |
