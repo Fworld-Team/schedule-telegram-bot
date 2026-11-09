@@ -267,6 +267,7 @@ class ScheduleMonitor:
         self.settings = application.bot_data["settings"]
         self.store = StateStore(self.settings.runtime_data_directory)
         self.lock = asyncio.Lock()
+        self.widget_backfill_attempted = False
 
     def active_chats(self) -> set[int]:
         # Same authoritative in-memory set used by activity_gate, populated
@@ -288,9 +289,11 @@ class ScheduleMonitor:
             today = now.date().isoformat()
             state = self.store.load()
             if state["last_successful_check"] and state["last_successful_check"] >= today:
+                await self.backfill_widget_weeks(state)
                 await self.refresh_widgets(state, now.date())
                 return "already-checked"
             if now.hour < DAILY_CHECK_HOUR:
+                await self.backfill_widget_weeks(state)
                 await self.refresh_widgets(state, now.date())
                 return "not-due"
             try:
@@ -325,6 +328,37 @@ class ScheduleMonitor:
             else:
                 LOGGER.info("Schedule monitor check accepted: %s changed slots", len(changes))
             return "changed" if changes else "baseline" if old is None else "unchanged"
+
+    async def backfill_widget_weeks(self, state: dict) -> None:
+        """Recover the widget data from the accepted PDF without advancing the daily check."""
+        if (
+            self.widget_backfill_attempted
+            or self.application.bot_data.get("schedule_widget_cards") is None
+            or state.get("widget_weeks") is not None
+            or not state.get("pdf_hash")
+        ):
+            return
+
+        self.widget_backfill_attempted = True
+        try:
+            async with asyncio.timeout(120):
+                content, _ = await download(self.client, state["pdf_url"], MAX_PDF_BYTES)
+                if hashlib.sha256(content).hexdigest() != state["pdf_hash"]:
+                    LOGGER.info("Schedule widget backfill deferred: the accepted PDF has changed")
+                    return
+                _, weekly = await parse_in_worker(content)
+        except (httpx.HTTPError, ScheduleParseError, WidgetDataError, TimeoutError) as exc:
+            LOGGER.warning("Schedule widget backfill failed: %s", type(exc).__name__)
+            return
+
+        if weekly is None:
+            LOGGER.info("Schedule widget backfill deferred: no verified week variants")
+            return
+        if self.store.load() != state:
+            return  # Another check advanced the baseline during the download.
+        self.store.save({**state, "widget_weeks": weekly})
+        state["widget_weeks"] = weekly
+        LOGGER.info("Schedule widget cache backfilled from the accepted PDF")
 
     async def refresh_widgets(self, state: dict, today: date) -> None:
         cards = self.application.bot_data.get("schedule_widget_cards")

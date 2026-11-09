@@ -1,5 +1,6 @@
 from copy import deepcopy
 from datetime import date, datetime, timezone
+import hashlib
 import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -129,6 +130,75 @@ class ScheduleWidgetTests(unittest.IsolatedAsyncioTestCase):
         states = [json.loads(call.kwargs["api_kwargs"]["public_data"]) for call in calls]
         self.assertEqual([state["kind"] for state in states], [corrected_kind.value, original_kind.value])
         self.assertEqual([state["patches"] for state in states], [[], []])
+
+    async def test_backfills_legacy_cache_before_due_without_advancing_daily_check(self):
+        fixture = Path(__file__).parent / "fixtures/timacad"
+        pdf = (fixture / "schedule.pdf").read_bytes()
+        requests = []
+
+        def university(request):
+            requests.append(request.url.path)
+            if request.url.path.endswith(".pdf"):
+                return httpx.Response(200, content=pdf)
+            return httpx.Response(200, content=(fixture / "source.html").read_bytes())
+
+        app = SimpleNamespace(bot=self.bot, bot_data={
+            "settings": self.settings, "storage": self.storage,
+            "schedule_widget_cards": self.cards, "active": {12},
+        })
+        async with httpx.AsyncClient(transport=httpx.MockTransport(university)) as client:
+            monitor = ScheduleMonitor(app, "active", client)
+            yesterday = datetime(2026, 11, 8, 8, tzinfo=timezone.utc)
+            self.assertEqual(await monitor.check(yesterday), "baseline")
+            legacy = monitor.store.load()
+            del legacy["widget_weeks"]
+            monitor.store.save(legacy)
+            requests.clear()
+
+            early = datetime(2026, 11, 9, 5, tzinfo=timezone.utc)
+            self.assertEqual(await monitor.check(early), "not-due")
+            self.assertEqual(len(requests), 1)
+            self.assertTrue(requests[0].endswith(".pdf"))
+            filled = monitor.store.load()
+            self.assertTrue(filled.pop("widget_weeks"))
+            self.assertEqual(filled, legacy)
+            restarted = ScheduleMonitor(app, "active", client)
+            await restarted.check(early)
+            self.assertEqual(len(requests), 1)
+            self.bot.do_api_request.assert_not_awaited()
+            self.bot.send_message.assert_not_awaited()
+            self.bot.do_api_request.return_value = {"message_id": 54}
+            self.assertTrue(await self.cards.open(12))
+
+            due = datetime(2026, 11, 9, 6, tzinfo=timezone.utc)
+            self.assertEqual(await restarted.check(due), "unchanged")
+            self.assertEqual(len(requests), 3)
+            self.assertEqual(monitor.store.load()["last_successful_check"], "2026-11-09")
+            self.bot.do_api_request.assert_awaited_once()
+            self.bot.send_message.assert_not_awaited()
+
+    async def test_backfill_never_adopts_a_changed_pdf_or_retries_on_every_tick(self):
+        legacy = {
+            "schema": 1, "last_successful_check": self.today.isoformat(),
+            "pdf_url": PDF_URL, "groups": sample_groups(),
+            "pdf_hash": hashlib.sha256(b"%PDF-accepted").hexdigest(),
+        }
+        self.cards.store.save(legacy)
+        app = SimpleNamespace(bot=self.bot, bot_data={
+            "settings": self.settings, "schedule_widget_cards": self.cards, "active": {12},
+        })
+        monitor = ScheduleMonitor(app, "active", client=None)
+        now = datetime(2026, 11, 9, 9, tzinfo=timezone.utc)
+        with patch("schedule_bot.schedule_monitor.download", new_callable=AsyncMock) as download, \
+             patch("schedule_bot.schedule_monitor.parse_in_worker", new_callable=AsyncMock) as parse:
+            download.return_value = (b"%PDF-changed", PDF_URL)
+            self.assertEqual(await monitor.check(now), "already-checked")
+            self.assertEqual(await monitor.check(now), "already-checked")
+            download.assert_awaited_once()
+            parse.assert_not_awaited()
+        self.assertEqual(monitor.store.load(), legacy)
+        self.bot.do_api_request.assert_not_awaited()
+        self.bot.send_message.assert_not_awaited()
 
     async def test_real_pdf_to_cached_card_to_update_without_extra_downloads(self):
         fixture = Path(__file__).parent / "fixtures/timacad"
