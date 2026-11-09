@@ -81,7 +81,7 @@ MAIN_KEYBOARD = ReplyKeyboardMarkup(
         [MAP_BUTTON, HELP_BUTTON, EXIT_BUTTON],
     ],
     resize_keyboard=True,
-    is_persistent=True,
+    is_persistent=False,
     input_field_placeholder="Выберите день",
 )
 

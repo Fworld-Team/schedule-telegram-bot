@@ -147,6 +147,9 @@ class HandlerTests(unittest.TestCase):
             ],
         )
 
+    def test_main_keyboard_does_not_request_persistent_display(self) -> None:
+        self.assertFalse(MAIN_KEYBOARD.to_dict()["is_persistent"])
+
     def test_same_day_photo_is_captioned_with_lower_week(self) -> None:
         Image.new("RGB", (4, 4), "white").save(
             self.settings.schedules_directory / "monday.png",
