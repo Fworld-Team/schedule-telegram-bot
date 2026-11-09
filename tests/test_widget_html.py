@@ -34,7 +34,9 @@ class WidgetHTMLTests(unittest.TestCase):
 
     @unittest.skipUnless(shutil.which("node"), "Node is required for the widget runtime test")
     def test_offline_navigation_isolation_rollover_and_live_state(self):
-        html = build_widget_html(sample(), anchor_monday=date(2026, 11, 9), anchor_kind="upper")
+        html = build_widget_html(
+            sample(), anchor_monday=date(2026, 11, 9), anchor_kind="upper", sent_on=date(2026, 11, 10),
+        )
         subprocess.run(["node", str(Path(__file__).with_name("widget_runtime.cjs"))],
                        input=html, text=True, check=True, timeout=10)
 

@@ -4,10 +4,10 @@ const vm = require("node:vm");
 
 const script = fs.readFileSync(0, "utf8").match(/<script>([\s\S]+)<\/script>/)[1];
 
-function viewer(storage = new Map()) {
+function viewer(storage = new Map(), start = "2026-11-15T20:59:00Z") {
   const nodes = new Map();
   const events = new Map();
-  let clock = Date.parse("2026-11-15T20:59:00Z");
+  let clock = Date.parse(start);
   let tick;
   class Element {
     constructor() { this.children = []; }
@@ -32,7 +32,7 @@ function viewer(storage = new Map()) {
   return {
     get, storage,
     tap: (id, index) => get(id).children[index].onclick(),
-    monday: () => { clock = Date.parse("2026-11-15T21:00:00Z"); tick(); },
+    advanceTo: stamp => { clock = Date.parse(stamp); tick(); },
     apply: state => {
       widget.publicData = state ? JSON.stringify(state) : "";
       events.get("publicDataChanged")();
@@ -55,7 +55,7 @@ a.tap("weeks", 1);
 assert.equal(a.get("kind").textContent, "Нижняя");
 assert.equal(a.get("date").textContent, "Понедельник, 16.11");
 
-a.monday();
+a.advanceTo("2026-11-15T21:00:00Z");
 assert.equal(a.get("weeks").children[0].textContent, "16.11–22.11");
 assert.equal(a.get("days").children[0].textContent, "Пн 16");
 assert.equal(a.get("kind").textContent, "Нижняя");
@@ -66,3 +66,20 @@ a.apply({ patches: [[1, 1, 0, 1, null]] });
 assert.equal(a.get("lessons").children[0].textContent, "Пар нет");
 a.apply(null);
 assert.equal(subject(), "Базы данных");
+
+// A card sent on Tuesday starts on Tuesday even if the client clock is behind.
+const midnight = viewer(new Map(), "2026-11-09T20:59:00Z");
+assert.equal(midnight.get("date").textContent, "Вторник, 10.11");
+midnight.tap("groups", 1);
+midnight.tap("days", 0);
+assert.equal(midnight.get("date").textContent, "Понедельник, 09.11");
+assert.equal(viewer(midnight.storage, "2026-11-10T20:59:00Z").get("date").textContent, "Понедельник, 09.11");
+midnight.advanceTo("2026-11-10T21:00:00Z");
+assert.equal(midnight.get("date").textContent, "Среда, 11.11");
+assert.equal(midnight.get("name").textContent, "ДЭ 24-24");
+
+const restored = viewer(new Map([["schedule", JSON.stringify({
+  group: "ДЭ 24-24", week: 0, day: 0, today: Date.parse("2026-11-10T00:00:00Z"),
+})]]), "2026-11-10T21:00:00Z");
+assert.equal(restored.get("date").textContent, "Среда, 11.11");
+assert.equal(restored.get("name").textContent, "ДЭ 24-24");
