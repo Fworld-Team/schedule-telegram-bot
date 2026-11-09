@@ -304,7 +304,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "• «Учебный план» — календарный учебный график;\n"
         "• «Экзамены» — зачёты, диф. зачёты и экзамены текущего семестра;\n"
         "• «Карта» — показывает карту;\n"
-        "• «Выход» или /stop — выключает ответы в этом чате.\n\n"
+        "• «Выход» — скрывает меню, уведомления продолжают приходить;\n"
+        "• /stop — отключает ответы и уведомления в этом чате.\n\n"
         "Верхняя неделя — нечётная, нижняя — чётная.\n"
         "Неделя с 1 сентября считается верхней (нечётной).\n"
         "С 8 сентября начинается нижняя (чётная) неделя.",
@@ -370,7 +371,10 @@ async def route_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     elif text == HELP_BUTTON:
         await help_command(update, context)
     elif text == EXIT_BUTTON:
-        await _disable_current_chat(update, context)
+        await message.reply_text(
+            "Меню скрыто. Чтобы открыть его снова, отправьте /start.",
+            reply_markup=ReplyKeyboardRemove(),
+        )
 
 
 async def _disable_current_chat(

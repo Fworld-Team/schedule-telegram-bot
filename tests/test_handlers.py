@@ -336,7 +336,8 @@ class HandlerTests(unittest.TestCase):
             help_text,
         )
         self.assertIn("«Карта» — показывает карту;", help_text)
-        self.assertIn("«Выход» или /stop", help_text)
+        self.assertIn("«Выход» — скрывает меню, уведомления продолжают приходить", help_text)
+        self.assertIn("/stop — отключает ответы и уведомления в этом чате", help_text)
         self.assertIn("Верхняя неделя — нечётная", help_text)
         self.assertIn("Неделя с 1 сентября считается верхней", help_text)
         self.assertIn("С 8 сентября начинается нижняя", help_text)
