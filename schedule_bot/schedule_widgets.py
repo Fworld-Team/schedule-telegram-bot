@@ -62,7 +62,10 @@ class ScheduleWidgetCards:
 
     async def send(self, chat_id, weekly, anchor, *, thread_id=None, silent=False):
         revision = digest({"weeks": weekly, "anchor": anchor})
-        html = build_widget_html(weekly, anchor_monday=date.fromisoformat(anchor["anchor"]), anchor_kind=anchor["kind"])
+        html = build_widget_html(
+            weekly, anchor_monday=date.fromisoformat(anchor["anchor"]),
+            anchor_kind=anchor["kind"], sent_on=datetime.now(self.zone).date(),
+        )
         message_id = await self.transport.send(chat_id, html, thread_id=thread_id, silent=silent)
         self.storage.save_schedule_widget_card(chat_id, message_id, json.dumps(weekly), revision, thread_id)
 

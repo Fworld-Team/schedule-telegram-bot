@@ -66,7 +66,9 @@ def validate_week_data(data: object) -> dict:
     return clean
 
 
-def build_widget_html(data: object, *, anchor_monday: date, anchor_kind: str) -> str:
+def build_widget_html(
+    data: object, *, anchor_monday: date, anchor_kind: str, sent_on: date | None = None,
+) -> str:
     """Build HTML with locally selectable groups/days and a shared week anchor.
 
     The anchor should come from BotStorage's manually editable week correction;
@@ -76,6 +78,8 @@ def build_widget_html(data: object, *, anchor_monday: date, anchor_kind: str) ->
         raise WidgetDataError("Expected a Monday anchor and upper/lower kind")
     payload = {"anchor": anchor_monday.isoformat(), "kind": anchor_kind,
                "groups": validate_week_data(data)}
+    if sent_on is not None:
+        payload["sentOn"] = sent_on.isoformat()
     source = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
     # Never let a subject such as '</script>' break out of its JS script tag.
     source = source.replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026")

@@ -8,23 +8,25 @@
 const DATA=__WIDGET_DATA__;
 const NAMES=['Понедельник','Вторник','Среда','Четверг','Пятница','Суббота'],SHORT=['Пн','Вт','Ср','Чт','Пт','Сб'],MS=86400000;
 const pad=n=>String(n).padStart(2,'0');
-const moscowNow=()=>new Date(Date.now()+3*3600000);
-const currentMonday=()=>{const now=moscowNow(),clock=Date.UTC(now.getUTCFullYear(),now.getUTCMonth(),now.getUTCDate());return clock-((now.getUTCDay()+6)%7)*MS};
-let monday=currentMonday();
-const todayIndex=()=>moscowNow().getUTCDay()===0?0:moscowNow().getUTCDay()-1;
+const sentDay=Date.parse(DATA.sentOn+'T00:00:00Z') || 0;
+const moscowDay=()=>Math.max(Math.floor((Date.now()+3*3600000)/MS)*MS,sentDay);
+const dayIndex=stamp=>(new Date(stamp).getUTCDay()+6)%7;
+const weekStart=stamp=>stamp-dayIndex(stamp)*MS;
+const defaultDay=stamp=>dayIndex(stamp)%6;
+let today=moscowDay(), monday=weekStart(today);
 const base=Date.parse(DATA.anchor+'T00:00:00Z');
 let anchor=base,anchorKind=DATA.kind;
-let group=Object.keys(DATA.groups)[0], week=0, day=todayIndex();
+let group=Object.keys(DATA.groups)[0], week=0, day=defaultDay(today);
 try {
   const saved=JSON.parse(localStorage.getItem('schedule'));
   if(saved && Object.hasOwn(DATA.groups,saved.group)) group=saved.group;
-  if(saved && saved.monday===monday) {
+  if(saved && saved.today===today) {
     if(saved.week===0 || saved.week===1) week=saved.week;
     if(Number.isInteger(saved.day) && saved.day>=0 && saved.day<6) day=saved.day;
   }
 } catch(e) {}
 function select() {
-  try { localStorage.setItem('schedule',JSON.stringify({group,week,day,monday})); } catch(e) {}
+  try { localStorage.setItem('schedule',JSON.stringify({group,week,day,today})); } catch(e) {}
   draw();
 }
 let liveGroups=DATA.groups;
@@ -53,5 +55,13 @@ liveGroups=groups;
 if(typeof state.anchor==='string'&&/^[0-9]{4}-[0-9]{2}-[0-9]{2}$/.test(state.anchor)&&(state.kind==='upper'||state.kind==='lower')){const d=Date.parse(state.anchor+'T00:00:00Z');if(Number.isFinite(d)){anchor=d;anchorKind=state.kind}}document.getElementById('fresh').textContent=TelegramWidget.publicData?'Расписание обновлено':'Данные на момент отправки';draw()}catch(e){}}
 if(window.TelegramWidget&&TelegramWidget.onEvent)TelegramWidget.onEvent('publicDataChanged',updateBotState);
 draw();updateBotState();
-setInterval(()=>{const next=currentMonday();if(next!==monday){monday=next;week=0;day=todayIndex();select()}},60000);
+setInterval(()=>{
+  const next=moscowDay();
+  if(next===today)return;
+  today=next;
+  monday=weekStart(today);
+  week=0;
+  day=defaultDay(today);
+  select();
+},60000);
 </script></body></html>
