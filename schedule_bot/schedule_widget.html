@@ -1,0 +1,57 @@
+<!doctype html><html lang="ru"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>
+:root{font-family:system-ui,sans-serif;color:var(--tg-theme-text-color,#eee);background:var(--tg-theme-bg-color,#101010)}
+*{box-sizing:border-box}body{margin:0;padding:12px 12px 24px;background:var(--tg-theme-bg-color,#101010)}
+.muted{color:var(--tg-theme-hint-color,#aaa);font-size:12px}.head{display:flex;justify-content:space-between;align-items:center;gap:8px}.name{font-size:22px;font-weight:700;margin:2px 0 10px}.pill{padding:6px 9px;border-radius:16px;background:var(--tg-theme-secondary-bg-color,#303030);font-size:12px;white-space:nowrap}.label{display:block;margin:10px 0 5px;font-size:12px;color:var(--tg-theme-hint-color,#aaa)}.tabs{display:grid;gap:4px}.groups,.weeks{grid-template-columns:repeat(2,minmax(0,1fr))}.days{grid-template-columns:repeat(6,minmax(0,1fr))}button{font:inherit;font-size:12px;color:var(--tg-theme-text-color,#eee);background:transparent;border:0;border-radius:18px;padding:10px 2px;min-width:0;cursor:pointer}button[aria-pressed="true"]{background:var(--tg-theme-secondary-bg-color,#343434);font-weight:650}.panel{margin-top:12px;padding:12px;border-radius:14px;background:var(--tg-theme-secondary-bg-color,#242424)}.date{font-size:15px;font-weight:700;margin-bottom:10px}.row{display:flex;gap:9px;align-items:flex-start;padding:8px 0;border-top:1px solid var(--tg-theme-hint-color,#666)}.num{flex:0 0 38px;border-radius:8px;background:var(--tg-theme-bg-color,#161616);padding:7px 0;text-align:center;font-size:19px;font-weight:700}.detail{flex:1;min-width:0}.subject{font-size:14px;font-weight:650;line-height:1.3;overflow-wrap:anywhere}.extra{font-size:11px;color:var(--tg-theme-hint-color,#aaa);margin-top:3px;overflow-wrap:anywhere}.foot{display:flex;justify-content:space-between;gap:4px;margin-top:9px;font-size:10px;color:var(--tg-theme-hint-color,#aaa)}
+</style><body><div class="head"><div><div class="muted">РАСПИСАНИЕ ЗАНЯТИЙ</div><div class="name" id="name">ДЭ 23-24</div></div><div class="pill" id="kind"></div></div>
+<div class="label">Учебная группа</div><div class="tabs groups" id="groups"></div><div class="label">Учебная неделя</div><div class="tabs weeks" id="weeks"></div><div class="label">День недели</div><div class="tabs days" id="days"></div><div class="panel"><div class="date" id="date"></div><div id="lessons"></div></div><div class="foot"><span>Расписание · локальный выбор</span><span id="fresh">Данные на момент отправки</span></div>
+<script>
+const DATA=__WIDGET_DATA__;
+const NAMES=['Понедельник','Вторник','Среда','Четверг','Пятница','Суббота'],SHORT=['Пн','Вт','Ср','Чт','Пт','Сб'],MS=86400000;
+const pad=n=>String(n).padStart(2,'0');
+const moscowNow=()=>new Date(Date.now()+3*3600000);
+const currentMonday=()=>{const now=moscowNow(),clock=Date.UTC(now.getUTCFullYear(),now.getUTCMonth(),now.getUTCDate());return clock-((now.getUTCDay()+6)%7)*MS};
+let monday=currentMonday();
+const todayIndex=()=>moscowNow().getUTCDay()===0?0:moscowNow().getUTCDay()-1;
+const base=Date.parse(DATA.anchor+'T00:00:00Z');
+let anchor=base,anchorKind=DATA.kind;
+let group=Object.keys(DATA.groups)[0], week=0, day=todayIndex();
+try {
+  const saved=JSON.parse(localStorage.getItem('schedule'));
+  if(saved && Object.hasOwn(DATA.groups,saved.group)) group=saved.group;
+  if(saved && saved.monday===monday) {
+    if(saved.week===0 || saved.week===1) week=saved.week;
+    if(Number.isInteger(saved.day) && saved.day>=0 && saved.day<6) day=saved.day;
+  }
+} catch(e) {}
+function select() {
+  try { localStorage.setItem('schedule',JSON.stringify({group,week,day,monday})); } catch(e) {}
+  draw();
+}
+let liveGroups=DATA.groups;
+const el=(tag,cls,txt)=>{const n=document.createElement(tag);if(cls)n.className=cls;if(txt!==undefined)n.textContent=txt;return n};
+const fmt=stamp=>{const d=new Date(stamp);return pad(d.getUTCDate())+'.'+pad(d.getUTCMonth()+1)};
+const kindAt=offset=>{const diff=Math.floor((monday+offset*7*MS-anchor)/(7*MS));const first=anchorKind==='upper'?0:1;return (diff+first)%2===0?'upper':'lower'};
+function tabRow(id,options,selected,action){const node=document.getElementById(id);node.replaceChildren();options.forEach((item,i)=>{const b=el('button','',item);b.type='button';b.setAttribute('aria-pressed',String(i===selected));b.onclick=()=>action(i);node.appendChild(b)})}
+function draw(){const wstamp=monday+week*7*MS,kind=kindAt(week),rows=liveGroups[group][kind][day];document.getElementById('name').textContent=group;document.getElementById('kind').textContent=kind==='upper'?'Верхняя':'Нижняя';
+tabRow('groups',Object.keys(DATA.groups),Object.keys(DATA.groups).indexOf(group),i=>{group=Object.keys(DATA.groups)[i];select()});
+tabRow('weeks',[0,1].map(i=>{const begin=wstamp+(i-week)*7*MS;return fmt(begin)+'–'+fmt(begin+6*MS)}),week,i=>{week=i;day=0;select()});
+tabRow('days',SHORT.map((s,i)=>s+' '+pad(new Date(wstamp+i*MS).getUTCDate())),day,i=>{day=i;select()});
+document.getElementById('date').textContent=NAMES[day]+', '+fmt(wstamp+day*MS);
+const list=document.getElementById('lessons');list.replaceChildren();if(!rows.length){list.appendChild(el('div','muted','Пар нет'));return}rows.forEach(item=>{const line=el('div','row');line.appendChild(el('div','num',String(item.number)));const detail=el('div','detail');detail.appendChild(el('div','subject',item.subject));detail.appendChild(el('div','extra',[item.time,item.type,item.room].filter(Boolean).join(' · ')));line.appendChild(detail);list.appendChild(line)})}
+function updateBotState(){if(!window.TelegramWidget)return;try{const state=JSON.parse(TelegramWidget.publicData||'{}');
+anchor=base;anchorKind=DATA.kind;
+const groups=JSON.parse(JSON.stringify(DATA.groups));
+for (const [g,k,d,n,delta] of state.patches || []) {
+  const list=groups[Object.keys(DATA.groups)[g]][['upper','lower'][k]][d];
+  const at=list.findIndex(item=>item.number===n);
+  if(delta===null) { if(at>=0) list.splice(at,1); }
+  else if(at>=0) Object.assign(list[at],delta);
+  else list.push({number:n,...delta});
+  list.sort((a,b)=>a.number-b.number);
+}
+liveGroups=groups;
+if(typeof state.anchor==='string'&&/^[0-9]{4}-[0-9]{2}-[0-9]{2}$/.test(state.anchor)&&(state.kind==='upper'||state.kind==='lower')){const d=Date.parse(state.anchor+'T00:00:00Z');if(Number.isFinite(d)){anchor=d;anchorKind=state.kind}}document.getElementById('fresh').textContent=TelegramWidget.publicData?'Расписание обновлено':'Данные на момент отправки';draw()}catch(e){}}
+if(window.TelegramWidget&&TelegramWidget.onEvent)TelegramWidget.onEvent('publicDataChanged',updateBotState);
+draw();updateBotState();
+setInterval(()=>{const next=currentMonday();if(next!==monday){monday=next;week=0;day=todayIndex();select()}},60000);
+</script></body></html>

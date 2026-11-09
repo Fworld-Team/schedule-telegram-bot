@@ -210,7 +210,7 @@ def validate_schedule(groups: object) -> Schedule:
     return cleaned
 
 
-def parse_pdf(content: bytes) -> Schedule:
+def _extract_tables(content: bytes) -> list[list[Cell]]:
     if not content.startswith(b"%PDF-") or len(content) > MAX_PDF_BYTES:
         raise ScheduleParseError("Not a PDF or PDF too large")
     tables = []
@@ -226,11 +226,29 @@ def parse_pdf(content: bytes) -> Schedule:
                              for box, text in zip(row.cells, texts) if box is not None]
                     tables.append(cells)
                 page.close()
-        return parse_cells(tables)
+        return tables
     except ScheduleParseError:
         raise
     except Exception as exc:
         raise ScheduleParseError("Cannot parse PDF") from exc
+
+
+def parse_pdf(content: bytes) -> Schedule:
+    return parse_cells(_extract_tables(content))
+
+
+def parse_snapshot(content: bytes) -> tuple[Schedule, dict | None]:
+    from .widget_html import WidgetDataError
+    from .widget_weekly_pdf import extract_verified_weekly_cells
+
+    tables = _extract_tables(content)
+    groups = parse_cells(tables)
+    try:
+        weekly = extract_verified_weekly_cells(tables)
+    except WidgetDataError:
+        # Preserve existing change detection if the widget cannot prove parity.
+        weekly = None
+    return groups, weekly
 
 
 def main() -> int:
@@ -242,8 +260,8 @@ def main() -> int:
             # for polling/SQLite, and fail closed on hostile or oversized PDFs.
             resource.setrlimit(resource.RLIMIT_AS, (256 * 1024**2, 256 * 1024**2))
             resource.setrlimit(resource.RLIMIT_CPU, (60, 60))
-        groups = parse_pdf(sys.stdin.buffer.read(MAX_PDF_BYTES + 1))
-        print(json.dumps(groups, ensure_ascii=False))
+        groups, weekly = parse_snapshot(sys.stdin.buffer.read(MAX_PDF_BYTES + 1))
+        print(json.dumps({"groups": groups, "widget_weeks": weekly}, ensure_ascii=False))
         return 0
     except Exception as exc:
         print(f"{type(exc).__name__}: {exc}", file=sys.stderr)

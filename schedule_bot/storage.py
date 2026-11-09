@@ -150,6 +150,14 @@ class BotStorage:
                     activated_at TEXT NOT NULL
                 );
 
+                CREATE TABLE IF NOT EXISTS schedule_widget_cards (
+                    chat_id INTEGER PRIMARY KEY,
+                    message_id INTEGER NOT NULL,
+                    base TEXT NOT NULL,
+                    revision TEXT NOT NULL,
+                    thread_id INTEGER
+                );
+
                 CREATE TABLE IF NOT EXISTS semester_assessments (
                     id INTEGER PRIMARY KEY,
                     semester_id INTEGER NOT NULL REFERENCES semesters(id),
@@ -239,6 +247,31 @@ class BotStorage:
                     "DELETE FROM active_chats WHERE chat_id = ?",
                     (chat_id,),
                 )
+
+    def schedule_widget_cards(self) -> list[sqlite3.Row]:
+        with self._connect() as connection:
+            return connection.execute(
+                "SELECT * FROM schedule_widget_cards ORDER BY chat_id"
+            ).fetchall()
+
+    def schedule_widget_card(self, chat_id: int) -> sqlite3.Row | None:
+        with self._connect() as connection:
+            return connection.execute(
+                "SELECT * FROM schedule_widget_cards WHERE chat_id = ?", (chat_id,)
+            ).fetchone()
+
+    def save_schedule_widget_card(
+        self, chat_id: int, message_id: int, base: str, revision: str, thread_id: int | None
+    ) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO schedule_widget_cards VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(chat_id) DO UPDATE SET message_id = excluded.message_id,
+                    base = excluded.base, revision = excluded.revision, thread_id = excluded.thread_id
+                """,
+                (chat_id, message_id, base, revision, thread_id),
+            )
 
     def list_semesters(self) -> list[Semester]:
         with self._connect() as connection:

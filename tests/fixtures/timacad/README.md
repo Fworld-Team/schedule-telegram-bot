@@ -15,3 +15,13 @@ The PDF is the unchanged original download.
   empty positions. We do not guess which subdivision means which week.
 
 The dated URL above is fixture provenance only, never a runtime fallback.
+
+The second original PDF, `schedule-2026-10-27.pdf`, was downloaded for
+widget integration tests. The target groups are again on page 4.
+
+- URL: https://www.timacad.ru/uploads/files/20261027/1793083289_ieiu-3.pdf
+- SHA-256: `3b720b5c179616549f52ee98bbd2dadd3861b62ec822502b9692dff0e4066f09`
+- Verified visually: a full-height Monday 09:00 class for both groups and both
+  weeks, two stacked Monday 10:55 classes, and an empty upper half of Monday
+  13:00 for ДЭ 24-24. The [university guide](https://www.timacad.ru/students/spravochnik-pervokursnika)
+  confirms that the top half is the odd week and the bottom half is even.

@@ -26,6 +26,9 @@ from .schedule_pdf import (
 )
 
 
+from .widget_html import WidgetDataError, validate_week_data
+
+
 LOGGER = logging.getLogger(__name__)
 DAILY_CHECK_HOUR = 9  # Existing configured bot timezone (production: Moscow).
 WAKE_SECONDS = 300
@@ -58,6 +61,11 @@ class StateStore:
                 # A real saved file always has an accepted baseline. Only a
                 # genuinely absent file is allowed to initialize from scratch.
                 raise ValueError("Saved state without baseline")
+            if state.get("widget_weeks") is not None:
+                try:
+                    state["widget_weeks"] = validate_week_data(state["widget_weeks"])
+                except WidgetDataError:
+                    state.pop("widget_weeks")
             if "pending" in state:
                 pending = state["pending"]
                 if not isinstance(pending["event"], str) or not isinstance(pending["attempted"], list):
@@ -125,7 +133,7 @@ async def download(client: httpx.AsyncClient, url: str, limit: int) -> tuple[byt
     raise ScheduleParseError("Too many source redirects")
 
 
-async def parse_in_worker(content: bytes) -> Schedule:
+async def parse_in_worker(content: bytes) -> tuple[Schedule, dict | None]:
     """PDF work cannot monopolize the polling event loop; kill on timeout/stop."""
     process = await asyncio.create_subprocess_exec(
         sys.executable, "-m", "schedule_bot.schedule_pdf",
@@ -136,7 +144,9 @@ async def parse_in_worker(content: bytes) -> Schedule:
         output, error = await asyncio.wait_for(process.communicate(content), timeout=90)
         if process.returncode:
             raise ScheduleParseError(error.decode(errors="replace")[-1000:])
-        return validate_schedule(json.loads(output))
+        parsed = json.loads(output)
+        weekly = parsed["widget_weeks"]
+        return validate_schedule(parsed["groups"]), validate_week_data(weekly) if weekly is not None else None
     finally:
         if process.returncode is None:
             with suppress(ProcessLookupError):
@@ -149,6 +159,7 @@ class Snapshot:
     pdf_url: str
     pdf_hash: str
     groups: Schedule
+    widget_weeks: dict | None = None
 
 
 async def fetch_snapshot(client: httpx.AsyncClient) -> Snapshot:
@@ -156,8 +167,8 @@ async def fetch_snapshot(client: httpx.AsyncClient) -> Snapshot:
         page, _ = await download(client, PAGE_URL, 2 * 1024 * 1024)
         url = find_pdf_url(page.decode("utf-8"))
         content, url = await download(client, url, MAX_PDF_BYTES)
-        groups = await parse_in_worker(content)
-        return Snapshot(url, hashlib.sha256(content).hexdigest(), groups)
+        groups, weekly = await parse_in_worker(content)
+        return Snapshot(url, hashlib.sha256(content).hexdigest(), groups, weekly)
 
 
 @dataclass(frozen=True)
@@ -277,10 +288,16 @@ class ScheduleMonitor:
             today = now.date().isoformat()
             state = self.store.load()
             if state["last_successful_check"] and state["last_successful_check"] >= today:
+                await self.refresh_widgets(state, now.date())
                 return "already-checked"
             if now.hour < DAILY_CHECK_HOUR:
+                await self.refresh_widgets(state, now.date())
                 return "not-due"
-            snapshot = await fetch_snapshot(self.client)
+            try:
+                snapshot = await fetch_snapshot(self.client)
+            except (httpx.HTTPError, ScheduleParseError, TimeoutError):
+                await self.refresh_widgets(state, now.date())
+                raise
             groups = validate_schedule(snapshot.groups)
             old = state["groups"]
             if old:
@@ -300,13 +317,20 @@ class ScheduleMonitor:
                 await self.deliver(state, state["pending"]["messages"])
             accepted = {"schema": 1, "last_successful_check": today,
                         "pdf_url": snapshot.pdf_url, "pdf_hash": snapshot.pdf_hash,
-                        "groups": groups}
+                        "groups": groups, "widget_weeks": snapshot.widget_weeks}
             self.store.save(accepted)
+            await self.refresh_widgets(accepted, now.date())
             if old is None:
                 LOGGER.info("Schedule monitor baseline initialized")
             else:
                 LOGGER.info("Schedule monitor check accepted: %s changed slots", len(changes))
             return "changed" if changes else "baseline" if old is None else "unchanged"
+
+    async def refresh_widgets(self, state: dict, today: date) -> None:
+        cards = self.application.bot_data.get("schedule_widget_cards")
+        weekly = state.get("widget_weeks")
+        if cards is not None and weekly is not None:
+            await cards.refresh(weekly, today, self.active_chats)
 
     async def deliver(self, state: dict, messages: list[str]) -> None:
         for chat_id in sorted(self.active_chats()):

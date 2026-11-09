@@ -12,16 +12,20 @@ import httpx
 from telegram import (
     BotCommand,
     BotCommandScopeChat,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
     ReplyKeyboardMarkup,
     ReplyKeyboardRemove,
     Update,
 )
 from telegram.error import BadRequest, NetworkError, TelegramError
+from telegram.helpers import create_deep_linked_url
 from telegram.request import HTTPXRequest
 from telegram.ext import (
     Application,
     ApplicationHandlerStop,
     ApplicationBuilder,
+    CallbackQueryHandler,
     CommandHandler,
     ContextTypes,
     MessageHandler,
@@ -39,6 +43,7 @@ from .calendar import (
 )
 from .media import MediaCatalog
 from .schedule_monitor import start_monitor, stop_monitor
+from .schedule_widgets import ScheduleWidgetCards
 from .settings import Settings, load_bot_token
 from .storage import ASSESSMENT_TYPE_LABELS, BotStorage
 
@@ -46,6 +51,10 @@ from .storage import ASSESSMENT_TYPE_LABELS, BotStorage
 LOGGER = logging.getLogger(__name__)
 
 TODAY_BUTTON: Final = "📅 Сегодня"
+SCHEDULE_BUTTON: Final = "📆 Расписание"
+WIDGET_BUTTON: Final = "🗓️ Интерактивное расписание"
+BACK_BUTTON: Final = "↩️ Назад"
+SCHEDULE_START_PAYLOAD: Final = "schedule"
 STUDY_PLAN_BUTTON: Final = "📚 Учебный план"
 ASSESSMENTS_BUTTON: Final = "🎓 Экзамены"
 MAP_BUTTON: Final = "🗺️ Карта"
@@ -73,17 +82,49 @@ DAY_BUTTONS: Final[dict[str, int]] = {
     "Пт": 4,
 }
 
+# A small, stable main keyboard; existing commands and media handlers remain.
 MAIN_KEYBOARD = ReplyKeyboardMarkup(
     [
-        [TODAY_BUTTON, "Пн", "Вт"],
-        ["Ср", "Чт", "Пт"],
+        [SCHEDULE_BUTTON],
         [STUDY_PLAN_BUTTON, ASSESSMENTS_BUTTON],
         [MAP_BUTTON, HELP_BUTTON, EXIT_BUTTON],
     ],
     resize_keyboard=True,
     is_persistent=False,
+    input_field_placeholder="Выберите раздел",
+)
+
+SCHEDULE_KEYBOARD = ReplyKeyboardMarkup(
+    [
+        [TODAY_BUTTON],
+        ["Пн", "Вт", "Ср"],
+        ["Чт", "Пт"],
+        [WIDGET_BUTTON],
+        [BACK_BUTTON],
+    ],
+    resize_keyboard=True,
+    is_persistent=False,
     input_field_placeholder="Выберите день",
 )
+
+def _private_schedule_button(username: str) -> InlineKeyboardButton:
+    return InlineKeyboardButton(
+        "Открыть карточку в личке",
+        url=create_deep_linked_url(username, SCHEDULE_START_PAYLOAD),
+    )
+
+
+def _group_schedule_keyboard(username: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton(TODAY_BUTTON, callback_data="sch:today")],
+        [InlineKeyboardButton(text, callback_data="sch:" + text)
+         for text in ("Пн", "Вт", "Ср")],
+        [InlineKeyboardButton(text, callback_data="sch:" + text)
+         for text in ("Чт", "Пт")],
+        [_private_schedule_button(username)],
+        [InlineKeyboardButton("Назад", callback_data="sch:back")],
+    ])
+
 
 WEEK_KIND_LABELS: Final[dict[WeekKind, str]] = {
     WeekKind.UPPER: "верхняя",
@@ -126,6 +167,8 @@ def build_application(settings: Settings) -> Application:
     application = builder.build()
     application.bot_data["settings"] = settings
     application.bot_data["storage"] = storage
+    if settings.schedule_widgets_enabled:
+        application.bot_data["schedule_widget_cards"] = ScheduleWidgetCards(application.bot, storage, settings)
     application.bot_data["catalog"] = storage.active_catalog()
     application.bot_data[ACTIVE_CHAT_IDS_KEY] = storage.active_chat_ids()
 
@@ -139,6 +182,7 @@ def build_application(settings: Settings) -> Application:
     application.add_handler(CommandHandler("status", status_command))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("myid", my_id))
+    application.add_handler(CallbackQueryHandler(schedule_callback, pattern=r"^sch:"))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, route_text))
     application.add_error_handler(on_error)
     application.post_init = initialize_application
@@ -278,10 +322,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     settings = _settings(context)
     await message.reply_text(
         f"{settings.bot_title}\n\n"
-        "Выберите день — я пришлю фотографию расписания. "
-        "Кнопка «Сегодня» определит день и тип недели автоматически.",
+        "Откройте «Расписание» и выберите день, чтобы получить фотографию занятий.",
         reply_markup=MAIN_KEYBOARD,
     )
+    if getattr(context, "args", None) == [SCHEDULE_START_PAYLOAD] and update.effective_chat.type == "private":
+        await _send_widget_or_fallback(update, context)
 
 
 async def stop_command(
@@ -299,6 +344,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         return
     await message.reply_text(
         "Как пользоваться:\n"
+        "• «Расписание» — быстрые дни и интерактивная карточка;\n"
         "• «Сегодня» — расписание на текущую дату;\n"
         "• Пн–Пт — день текущей календарной недели;\n"
         "• «Учебный план» — календарный учебный график;\n"
@@ -356,7 +402,17 @@ async def route_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         return
 
     text = message.text.strip()
-    if text in DAY_BUTTONS:
+    if text == SCHEDULE_BUTTON:
+        submenu = (_group_schedule_keyboard(context.bot.username)
+                   if _is_group_chat(update) else SCHEDULE_KEYBOARD)
+        await message.reply_text("Выберите день или интерактивное расписание.", reply_markup=submenu)
+    elif text == BACK_BUTTON:
+        await message.reply_text(
+            "Главное меню", reply_markup=None if _is_group_chat(update) else MAIN_KEYBOARD,
+        )
+    elif text == WIDGET_BUTTON:
+        await _send_widget_or_fallback(update, context)
+    elif text in DAY_BUTTONS:
         settings = _settings(context)
         target = date_in_current_week(_today(settings), DAY_BUTTONS[text])
         await _send_schedule(update, context, target)
@@ -374,6 +430,55 @@ async def route_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         await message.reply_text(
             "Меню скрыто. Чтобы открыть его снова, отправьте /start.",
             reply_markup=ReplyKeyboardRemove(),
+        )
+
+
+def _is_group_chat(update: Update) -> bool:
+    chat = update.effective_chat
+    return chat is not None and chat.id < 0
+
+
+async def schedule_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Group-safe inline navigation: never switches other members' keyboards."""
+    query = update.callback_query
+    if query is None:
+        return
+    value = (query.data or "").removeprefix("sch:")
+    if value == "back":
+        await query.answer("Главное меню доступно на клавиатуре.")
+        return
+    await query.answer()
+    if value == "widget":
+        await _send_widget_or_fallback(update, context)
+    elif value == "today":
+        await today_command(update, context)
+    elif value in DAY_BUTTONS:
+        target = date_in_current_week(_today(_settings(context)), DAY_BUTTONS[value])
+        await _send_schedule(update, context, target)
+
+
+async def _send_widget_or_fallback(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    message = update.effective_message
+    chat = update.effective_chat
+    if message is None or chat is None:
+        return
+    cards = context.application.bot_data.get("schedule_widget_cards")
+    if chat.type == "private" and cards is not None and await cards.open(
+        chat.id, thread_id=getattr(message, "message_thread_id", None)
+    ):
+        return
+    if _is_group_chat(update):
+        await message.reply_text(
+            "Интерактивное расписание доступно в личном чате с ботом.",
+            reply_markup=InlineKeyboardMarkup([[_private_schedule_button(context.bot.username)]]),
+        )
+    else:
+        await message.reply_text(
+            "Карточка расписания сейчас недоступна. Выберите день обычной кнопкой.",
+            reply_markup=SCHEDULE_KEYBOARD,
         )
 
 
@@ -400,11 +505,12 @@ async def _send_schedule(
     if message is None:
         return
     weekday = target_date.weekday()
+    reply_keyboard = None if _is_group_chat(update) else SCHEDULE_KEYBOARD
     if weekday > 4:
         await message.reply_text(
             f"{WEEKDAY_NAMES_RU[weekday]}, {target_date:%d.%m.%Y}: "
             "занятия на этот день не настроены.",
-            reply_markup=MAIN_KEYBOARD,
+            reply_markup=reply_keyboard,
         )
         return
 
@@ -415,7 +521,7 @@ async def _send_schedule(
     if not files:
         await message.reply_text(
             f"Для дня «{WEEKDAY_NAMES_RU[weekday]}» пока нет фотографии.",
-            reply_markup=MAIN_KEYBOARD,
+            reply_markup=reply_keyboard,
         )
         return
 
@@ -437,7 +543,7 @@ async def _send_schedule(
         f"{WEEKDAY_NAMES_RU[weekday]}, {target_date:%d.%m.%Y}\n"
         f"{week_text}{WEEK_KIND_LABELS[kind]}"
     )
-    await _send_images(message, files, caption)
+    await _send_images(message, files, caption, reply_markup=reply_keyboard)
 
 
 async def _send_maps(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -527,18 +633,19 @@ async def _send_images(
     caption: str,
     *,
     parse_mode: str | None = None,
+    reply_markup=MAIN_KEYBOARD,
 ) -> None:
     """Send photos one by one and fall back to documents for invalid dimensions."""
 
     for index, path in enumerate(files):
         current_caption = caption if index == 0 else None
-        reply_markup = MAIN_KEYBOARD if index == len(files) - 1 else None
+        visible_markup = reply_markup if index == len(files) - 1 else None
         try:
             await _send_image_with_retries(
                 message,
                 path,
                 current_caption,
-                reply_markup,
+                visible_markup,
                 parse_mode,
                 as_document=False,
             )
@@ -548,7 +655,7 @@ async def _send_images(
                 message,
                 path,
                 current_caption,
-                reply_markup,
+                visible_markup,
                 parse_mode,
                 as_document=True,
             )
@@ -557,7 +664,7 @@ async def _send_images(
             await message.reply_text(
                 f"Не удалось прочитать файл {path.name}. Проверьте, что он не "
                 "перемещён и полностью синхронизирован.",
-                reply_markup=MAIN_KEYBOARD,
+                reply_markup=reply_markup,
             )
 
 

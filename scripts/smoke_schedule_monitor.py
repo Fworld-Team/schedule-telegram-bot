@@ -28,7 +28,7 @@ async def smoke(output: Path):
         print(f"Discovered PDF: {url}")
         pdf, url = await download(client, url, MAX_PDF_BYTES)
         (output / "source.pdf").write_bytes(pdf)
-    groups = await parse_in_worker(pdf)
+    groups, _ = await parse_in_worker(pdf)
     (output / "extracted.json").write_text(json.dumps(groups, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"PDF SHA256: {hashlib.sha256(pdf).hexdigest()}")
     for group, rows in groups.items():

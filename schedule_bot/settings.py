@@ -35,6 +35,7 @@ class Settings:
     data_directory: Path | None = None
     admin_user_ids: frozenset[int] = frozenset()
     proxy_url: str | None = None
+    schedule_widgets_enabled: bool = False
 
     @classmethod
     def load(cls, project_root: Path | None = None) -> "Settings":
@@ -101,6 +102,7 @@ class Settings:
             data_directory=data_directory,
             admin_user_ids=admin_user_ids,
             proxy_url=_parse_proxy_url(os.environ.get("BOT_PROXY_URL", "")),
+            schedule_widgets_enabled=os.environ.get("BOT_SCHEDULE_WIDGETS") == "1",
         )
 
     def ensure_media_directories(self) -> None:
