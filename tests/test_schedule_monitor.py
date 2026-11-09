@@ -547,7 +547,7 @@ class HTTPTests(unittest.IsolatedAsyncioTestCase):
                 return httpx.Response(200, content=b"%PDF-test", headers={"content-type": "application/pdf"})
             return httpx.Response(200, text=HTML)
         async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
-            with patch("schedule_bot.schedule_monitor.parse_in_worker", new=AsyncMock(return_value=sample_groups())):
+            with patch("schedule_bot.schedule_monitor.parse_in_worker", new=AsyncMock(return_value=(sample_groups(), None))):
                 await fetch_snapshot(client)
                 await fetch_snapshot(client)
         self.assertEqual(len(requests), 4)

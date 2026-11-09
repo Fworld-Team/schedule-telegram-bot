@@ -13,6 +13,9 @@ from telegram.ext import ApplicationHandlerStop
 from schedule_bot.bot import (
     ACTIVE_CHAT_IDS_KEY,
     MAIN_KEYBOARD,
+    SCHEDULE_KEYBOARD,
+    SCHEDULE_INLINE_KEYBOARD,
+    schedule_callback,
     activity_gate,
     help_command,
     _send_images,
@@ -116,7 +119,7 @@ class HandlerTests(unittest.TestCase):
         message = FakeMessage(text)
         update = SimpleNamespace(
             effective_message=message,
-            effective_chat=SimpleNamespace(id=100),
+            effective_chat=SimpleNamespace(id=100, type="private"),
         )
         with patch("schedule_bot.bot._today", return_value=today):
             asyncio.run(route_text(update, self.context()))
@@ -132,7 +135,7 @@ class HandlerTests(unittest.TestCase):
         self.assertIn("Понедельник, 31.08.2026", message.photos[0][1])
         self.assertIn("верхняя", message.photos[0][1])
 
-    def test_main_keyboard_contains_new_buttons_without_moving_existing_ones(self) -> None:
+    def test_main_keyboard_contains_only_top_level_sections(self) -> None:
         rows = [
             [button.text for button in row]
             for row in MAIN_KEYBOARD.keyboard
@@ -140,8 +143,7 @@ class HandlerTests(unittest.TestCase):
         self.assertEqual(
             rows,
             [
-                ["📅 Сегодня", "Пн", "Вт"],
-                ["Ср", "Чт", "Пт"],
+                ["📆 Расписание"],
                 ["📚 Учебный план", "🎓 Экзамены"],
                 ["🗺️ Карта", "ℹ️ Помощь", "🚪 Выход"],
             ],
@@ -149,6 +151,69 @@ class HandlerTests(unittest.TestCase):
 
     def test_main_keyboard_does_not_request_persistent_display(self) -> None:
         self.assertFalse(MAIN_KEYBOARD.to_dict()["is_persistent"])
+
+    def test_schedule_submenu_contains_legacy_days_and_widget(self) -> None:
+        rows = [[button.text for button in row] for row in SCHEDULE_KEYBOARD.keyboard]
+        self.assertEqual(rows, [
+            ["📅 Сегодня"], ["Пн", "Вт", "Ср"], ["Чт", "Пт"],
+            ["🗓️ Интерактивное расписание"], ["↩️ Назад"],
+        ])
+        self.assertFalse(SCHEDULE_KEYBOARD.is_persistent)
+
+    def test_submenu_and_back_work_without_media(self) -> None:
+        opened = self.run_button("📆 Расписание", date(2026, 11, 9))
+        self.assertEqual(opened.reply_markups[-1], SCHEDULE_KEYBOARD)
+        back = self.run_button("↩️ Назад", date(2026, 11, 9))
+        self.assertEqual(back.reply_markups[-1], MAIN_KEYBOARD)
+
+    def test_group_navigation_keeps_shared_keyboard_and_inline_menu(self) -> None:
+        message = FakeMessage("📆 Расписание")
+        update = SimpleNamespace(
+            effective_message=message,
+            effective_chat=SimpleNamespace(id=-100, type="group"),
+        )
+        asyncio.run(route_text(update, self.context()))
+        self.assertIs(message.reply_markups[-1], SCHEDULE_INLINE_KEYBOARD)
+
+        query = AsyncMock()
+        update.callback_query = query
+        query.data = "sch:back"
+        asyncio.run(schedule_callback(update, self.context()))
+        query.answer.assert_awaited_once_with("Главное меню доступно на клавиатуре.")
+        query.edit_message_reply_markup.assert_not_awaited()
+
+        query.data = "sch:widget"
+        context = self.context()
+        cards = AsyncMock()
+        context.application.bot_data["schedule_widget_cards"] = cards
+        asyncio.run(schedule_callback(update, context))
+        self.assertIn("личном чате", message.messages[-1])
+        self.assertIsNone(message.reply_markups[-1])
+        cards.open.assert_not_awaited()
+
+        Image.new("RGB", (4, 4), "white").save(self.settings.schedules_directory / "monday.png")
+        query.data = "sch:Пн"
+        with patch("schedule_bot.bot._today", return_value=date(2026, 11, 9)):
+            asyncio.run(schedule_callback(update, context))
+        self.assertEqual(message.photos[-1][0], "monday.png")
+        self.assertIsNone(message.reply_markups[-1])
+        query.edit_message_reply_markup.assert_not_awaited()
+
+    def test_private_widget_button_uses_card_service(self) -> None:
+        message = FakeMessage("🗓️ Интерактивное расписание")
+        update = SimpleNamespace(effective_message=message,
+                                 effective_chat=SimpleNamespace(id=100, type="private"))
+        context = self.context()
+        cards = AsyncMock()
+        context.application.bot_data["schedule_widget_cards"] = cards
+        asyncio.run(route_text(update, context))
+        cards.open.assert_awaited_once_with(100, thread_id=None)
+        self.assertEqual(message.messages, [])
+
+    def test_widget_without_verified_week_data_does_not_guess_or_call_api(self) -> None:
+        message = self.run_button("🗓️ Интерактивное расписание", date(2026, 11, 9))
+        self.assertIn("Карточка расписания сейчас недоступна", message.messages[0])
+        self.assertEqual(message.reply_markups[-1], SCHEDULE_KEYBOARD)
 
     def test_same_day_photo_is_captioned_with_lower_week(self) -> None:
         Image.new("RGB", (4, 4), "white").save(
@@ -257,7 +322,7 @@ class HandlerTests(unittest.TestCase):
         message = FakeMessage("🎓 Экзамены")
         update = SimpleNamespace(
             effective_message=message,
-            effective_chat=SimpleNamespace(id=100),
+            effective_chat=SimpleNamespace(id=100, type="private"),
         )
 
         asyncio.run(route_text(update, self.context(storage)))
@@ -281,7 +346,7 @@ class HandlerTests(unittest.TestCase):
         message = FakeMessage("🎓 Экзамены")
         update = SimpleNamespace(
             effective_message=message,
-            effective_chat=SimpleNamespace(id=100),
+            effective_chat=SimpleNamespace(id=100, type="private"),
         )
 
         asyncio.run(route_text(update, self.context(storage)))
