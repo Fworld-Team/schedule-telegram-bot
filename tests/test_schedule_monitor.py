@@ -9,10 +9,16 @@ import unittest
 from unittest.mock import AsyncMock, Mock, patch
 
 import httpx
+from telegram import ReplyKeyboardRemove
+from telegram.ext import ApplicationHandlerStop
 from telegram.error import BadRequest, Forbidden, TimedOut
 
 from schedule_bot.bot import (
     ACTIVE_CHAT_IDS_KEY,
+    EXIT_BUTTON,
+    MAIN_KEYBOARD,
+    activity_gate,
+    route_text,
     POLLING_WATCHDOG_TASK_KEY,
     initialize_application,
     shutdown_application,
@@ -233,6 +239,56 @@ class MonitorTests(unittest.IsolatedAsyncioTestCase):
         self.changed()
         await self.monitor.check(NOW)
         self.assertCountEqual([c.kwargs["chat_id"] for c in self.bot.send_message.call_args_list], [-10099, 123])
+
+    async def test_exit_preserves_private_and_group_notification_delivery(self):
+        context = SimpleNamespace(application=self.app)
+        chat_ids = {42, -10099}
+
+        def update(text, chat_id):
+            return SimpleNamespace(
+                effective_message=FakeMessage(text),
+                effective_chat=SimpleNamespace(
+                    id=chat_id, type="private" if chat_id > 0 else "supergroup",
+                ),
+                callback_query=None,
+            )
+
+        await self.baseline()
+        with patch.object(self.storage, "set_chat_active", wraps=self.storage.set_chat_active) as set_active:
+            for chat_id in chat_ids:
+                exit_update = update(EXIT_BUTTON, chat_id)
+                await activity_gate(exit_update, context)
+                await route_text(exit_update, context)
+                self.assertIsInstance(exit_update.effective_message.reply_markups[0], ReplyKeyboardRemove)
+            set_active.assert_not_called()
+        self.assertEqual(self.storage.active_chat_ids(), chat_ids)
+        self.assertEqual(self.app.bot_data[ACTIVE_CHAT_IDS_KEY], chat_ids)
+        self.changed()
+        self.assertEqual(await self.monitor.check(NOW), "changed")
+        self.assertCountEqual([c.kwargs["chat_id"] for c in self.bot.send_message.await_args_list], chat_ids)
+
+        for chat_id in chat_ids:
+            await stop_command(update("/stop", chat_id), context)
+            stale_exit = update(EXIT_BUTTON, chat_id)
+            with self.assertRaises(ApplicationHandlerStop):
+                await activity_gate(stale_exit, context)
+        self.assertEqual(self.storage.active_chat_ids(), set())
+        self.assertEqual(self.app.bot_data[ACTIVE_CHAT_IDS_KEY], set())
+        self.bot.send_message.reset_mock()
+        self.groups[GROUPS[0]][0]["lesson"] = "Следующее изменение"
+        self.assertEqual(await self.monitor.check(NOW + timedelta(days=1)), "changed")
+        self.bot.send_message.assert_not_awaited()
+
+        for chat_id in chat_ids:
+            start_update = update("/start", chat_id)
+            await activity_gate(start_update, context)
+            await start(start_update, context)
+            self.assertIs(start_update.effective_message.reply_markups[0], MAIN_KEYBOARD)
+        self.assertEqual(self.storage.active_chat_ids(), chat_ids)
+        self.assertEqual(self.app.bot_data[ACTIVE_CHAT_IDS_KEY], chat_ids)
+        self.groups[GROUPS[0]][0]["lesson"] = "Изменение после включения"
+        self.assertEqual(await self.monitor.check(NOW + timedelta(days=2)), "changed")
+        self.assertCountEqual([c.kwargs["chat_id"] for c in self.bot.send_message.await_args_list], chat_ids)
 
     async def test_no_active_chats_accepts_baseline_without_sending(self):
         await self.baseline()
