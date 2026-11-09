@@ -15,3 +15,7 @@ The PDF is the unchanged original download.
   empty positions. We do not guess which subdivision means which week.
 
 The dated URL above is fixture provenance only, never a runtime fallback.
+
+The October fixture was downloaded from the university on 2026-11-09.
+- PDF: https://www.timacad.ru/uploads/files/20261027/1793083289_ieiu-3.pdf
+- SHA-256: `3b720b5c179616549f52ee98bbd2dadd3861b62ec822502b9692dff0e4066f09`
