@@ -55,6 +55,15 @@ class ScheduleWidgetCards:
                     return False
                 anchor = self.anchor(datetime.now(self.zone).date())
                 await self.send(chat_id, weekly, anchor, thread_id=thread_id)
+            except BadRequest as exc:
+                if exc.__cause__ is None:
+                    LOGGER.warning("Schedule widget unavailable: sendWidget rejected: %s", exc)
+                else:
+                    # PTB includes the raw response body when it cannot parse JSON.
+                    LOGGER.warning(
+                        "Schedule widget unavailable: sendWidget returned an unparseable HTTP 400"
+                    )
+                return False
             except (ValueError, OSError, TelegramError) as exc:
                 LOGGER.warning("Schedule widget unavailable: %s", type(exc).__name__)
                 return False
