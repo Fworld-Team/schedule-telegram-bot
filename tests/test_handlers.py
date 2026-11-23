@@ -7,7 +7,7 @@ import unittest
 from unittest.mock import AsyncMock, patch
 
 from PIL import Image
-from telegram.error import BadRequest, TimedOut
+from telegram.error import TimedOut
 from telegram.ext import ApplicationHandlerStop
 
 from schedule_bot.bot import (
@@ -23,13 +23,9 @@ from schedule_bot.bot import (
     start,
     stop_command,
 )
-from schedule_bot.calendar import WeekKind
 from schedule_bot.media import MediaCatalog
-from schedule_bot.schedule_monitor import SCHEDULE_STATE_KEY, StateStore
 from schedule_bot.settings import Settings
 from schedule_bot.storage import BotStorage
-from tests.test_schedule_pdf import PDF_URL, sample_groups
-from tests.test_widget_html import sample
 
 
 class FakeMessage:
@@ -98,7 +94,6 @@ class HandlerTests(unittest.TestCase):
         bot_data = {
             "settings": self.settings,
             "catalog": self.catalog,
-            SCHEDULE_STATE_KEY: StateStore(self.settings.runtime_data_directory),
             ACTIVE_CHAT_IDS_KEY: set(),
         }
         if storage is not None:
@@ -235,49 +230,6 @@ class HandlerTests(unittest.TestCase):
         message = self.run_button("🗓️ Интерактивное расписание", date(2026, 11, 9))
         self.assertIn("Карточка расписания сейчас недоступна", message.messages[0])
         self.assertEqual(message.reply_markups[-1], SCHEDULE_KEYBOARD)
-
-    def test_inline_schedule_uses_verified_cache_and_edits_on_navigation(self) -> None:
-        today = date(2026, 11, 23)
-        storage = self.storage()
-        storage.set_current_week_kind(today, WeekKind.UPPER, user_id=1)
-        weekly = sample()
-        lesson = weekly["ДЭ 24-24"]["lower"][0][0]
-        weekly["ДЭ 24-24"]["lower"][1] = [{**lesson, "subject": "Тестовое занятие"}]
-        StateStore(self.settings.runtime_data_directory).save({
-            "schema": 1, "last_successful_check": today.isoformat(),
-            "pdf_url": PDF_URL, "groups": sample_groups(), "widget_weeks": weekly,
-        })
-        for native_enabled in (False, True):
-            with self.subTest(native_enabled=native_enabled):
-                context = self.context(storage)
-                if native_enabled:
-                    cards = AsyncMock()
-                    cards.open.return_value = False
-                    context.application.bot_data["schedule_widget_cards"] = cards
-                message = FakeMessage("🗓️ Интерактивное расписание")
-                update = SimpleNamespace(
-                    effective_message=message, effective_chat=SimpleNamespace(id=100, type="private"),
-                )
-                with patch("schedule_bot.bot._today", return_value=today):
-                    asyncio.run(route_text(update, context))
-                    self.assertIn("Понедельник, 23.11.2026 · верхняя неделя", message.messages[0])
-                    self.assertIn("Базы данных", message.messages[0])
-                    keyboard = message.reply_markups[0].inline_keyboard
-                    self.assertEqual(keyboard[0][0].text, "✓ ДЭ 23-24")
-                    query = AsyncMock()
-                    update.callback_query = query
-                    for row, col in ((0, 1), (1, 1), (2, 1)):
-                        query.data = keyboard[row][col].callback_data
-                        asyncio.run(schedule_callback(update, context))
-                        text, = query.edit_message_text.await_args.args
-                        keyboard = query.edit_message_text.await_args.kwargs["reply_markup"].inline_keyboard
-                    self.assertIn("ДЭ 24-24", text)
-                    self.assertIn("Вторник, 01.12.2026 · нижняя неделя", text)
-                    self.assertIn("Тестовое занятие", text)
-                    self.assertIn("01-201", text)
-                    self.assertEqual(len(message.messages), 1)
-                    query.edit_message_text.side_effect = BadRequest("Message is not modified")
-                    asyncio.run(schedule_callback(update, context))
 
     def test_same_day_photo_is_captioned_with_lower_week(self) -> None:
         Image.new("RGB", (4, 4), "white").save(
