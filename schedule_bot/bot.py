@@ -3,15 +3,17 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 import logging
 from pathlib import Path
+import re
 from typing import Final
 
 import httpx
 from telegram import (
     BotCommand,
     BotCommandScopeChat,
+    InaccessibleMessage,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     ReplyKeyboardMarkup,
@@ -42,7 +44,8 @@ from .calendar import (
     date_in_current_week,
 )
 from .media import MediaCatalog
-from .schedule_monitor import start_monitor, stop_monitor
+from .schedule_monitor import SCHEDULE_STATE_KEY, StateStore, start_monitor, stop_monitor
+from .schedule_pdf import GROUPS
 from .schedule_widgets import ScheduleWidgetCards
 from .settings import Settings, load_bot_token
 from .storage import ASSESSMENT_TYPE_LABELS, BotStorage
@@ -167,6 +170,7 @@ def build_application(settings: Settings) -> Application:
     application = builder.build()
     application.bot_data["settings"] = settings
     application.bot_data["storage"] = storage
+    application.bot_data[SCHEDULE_STATE_KEY] = StateStore(settings.runtime_data_directory)
     if settings.schedule_widgets_enabled:
         application.bot_data["schedule_widget_cards"] = ScheduleWidgetCards(application.bot, storage, settings)
     application.bot_data["catalog"] = storage.active_catalog()
@@ -447,6 +451,9 @@ async def schedule_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     if value == "back":
         await query.answer("Главное меню доступно на клавиатуре.")
         return
+    if value.startswith("card:"):
+        await _change_inline_schedule(update, context, value)
+        return
     await query.answer()
     if value == "widget":
         await _send_widget_or_fallback(update, context)
@@ -475,11 +482,92 @@ async def _send_widget_or_fallback(
             "Интерактивное расписание доступно в личном чате с ботом.",
             reply_markup=InlineKeyboardMarkup([[_private_schedule_button(context.bot.username)]]),
         )
-    else:
-        await message.reply_text(
-            "Карточка расписания сейчас недоступна. Выберите день обычной кнопкой.",
-            reply_markup=SCHEDULE_KEYBOARD,
+        return
+    today = _today(_settings(context))
+    card = _inline_schedule(context, today, 0, 0, today.weekday() % 6)
+    if card is not None:
+        text, keyboard = card
+        await message.reply_text(text, reply_markup=keyboard)
+        return
+    await message.reply_text(
+        "Карточка расписания сейчас недоступна. Выберите день обычной кнопкой.",
+        reply_markup=SCHEDULE_KEYBOARD,
+    )
+
+
+async def _change_inline_schedule(
+    update: Update, context: ContextTypes.DEFAULT_TYPE, value: str,
+) -> None:
+    query = update.callback_query
+    chat, message = update.effective_chat, update.effective_message
+    selection = re.fullmatch(r"card:([01]):([01]):([0-5])", value)
+    if (selection is None or chat is None or chat.type != "private"
+            or message is None or isinstance(message, InaccessibleMessage)):
+        await query.answer()
+        return
+    group, week, day = map(int, selection.groups())
+    card = _inline_schedule(context, _today(_settings(context)), group, week, day)
+    if card is None:
+        await query.answer("Данные расписания сейчас недоступны.", show_alert=True)
+        return
+    await query.answer()
+    text, keyboard = card
+    try:
+        await query.edit_message_text(text, reply_markup=keyboard)
+    except BadRequest as exc:
+        if not str(exc).casefold().startswith("message is not modified"):
+            raise
+
+
+def _inline_schedule(
+    context: ContextTypes.DEFAULT_TYPE, today: date, group: int, week: int, day: int,
+) -> tuple[str, InlineKeyboardMarkup] | None:
+    """Render one day from the monitor's last verified timetable."""
+    settings = _settings(context)
+    state = context.application.bot_data.get(SCHEDULE_STATE_KEY)
+    if state is None:
+        return None
+    try:
+        weeks = state.load().get("widget_weeks")
+    except (ValueError, OSError) as exc:
+        LOGGER.warning("Could not read interactive schedule: %s", type(exc).__name__)
+        return None
+    if weeks is None:
+        return None
+
+    monday = date_in_current_week(today, 0)
+    selected_monday = monday + timedelta(weeks=week)
+    target = selected_monday + timedelta(days=day)
+    kind = _week_kind(target, settings, _storage_or_none(context))
+    lines = [
+        f"🗓 Расписание · {GROUPS[group]}",
+        f"{WEEKDAY_NAMES_RU[day]}, {target:%d.%m.%Y} · {WEEK_KIND_LABELS[kind]} неделя",
+    ]
+    lessons = weeks[GROUPS[group]][kind.value][day]
+    for lesson in lessons:
+        details = " · ".join(filter(None, (lesson["time"], lesson["type"], lesson["room"])))
+        lines.append(f"{lesson['number']}. {lesson['subject']}\n{details}")
+    if not lessons:
+        lines.append("Пар нет.")
+
+    def button(label: str, g: int, w: int, d: int, *, selected: bool) -> InlineKeyboardButton:
+        return InlineKeyboardButton(
+            f"✓ {label}" if selected else label, callback_data=f"sch:card:{g}:{w}:{d}",
         )
+
+    dates = [monday + timedelta(weeks=offset) for offset in range(2)]
+    days = [
+        button(f"{label} {(selected_monday + timedelta(days=i)):%d}", group, week, i, selected=i == day)
+        for i, label in enumerate((*DAY_BUTTONS, "Сб"))
+    ]
+    keyboard = InlineKeyboardMarkup([
+        [button(label, i, week, day, selected=i == group) for i, label in enumerate(GROUPS)],
+        [button(f"{start:%d.%m}–{start + timedelta(days=6):%d.%m}", group, i,
+                day if i == week else 0, selected=i == week) for i, start in enumerate(dates)],
+        days[:3],
+        days[3:],
+    ])
+    return "\n\n".join(lines), keyboard
 
 
 async def _disable_current_chat(

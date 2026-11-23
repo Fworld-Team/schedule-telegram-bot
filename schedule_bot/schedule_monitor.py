@@ -34,6 +34,7 @@ DAILY_CHECK_HOUR = 9  # Existing configured bot timezone (production: Moscow).
 WAKE_SECONDS = 300
 RETRY_SECONDS = 1800
 TASK_KEY = "schedule_monitor_task"
+SCHEDULE_STATE_KEY = "interactive_schedule_state"
 MESSAGE_LIMIT = 4000  # UTF-16 units, conservatively below Telegram's 4096.
 
 
@@ -265,7 +266,7 @@ class ScheduleMonitor:
         self.active_chat_ids_key = active_chat_ids_key
         self.client = client
         self.settings = application.bot_data["settings"]
-        self.store = StateStore(self.settings.runtime_data_directory)
+        self.store = application.bot_data.get(SCHEDULE_STATE_KEY) or StateStore(self.settings.runtime_data_directory)
         self.lock = asyncio.Lock()
         self.widget_backfill_attempted = False
 
@@ -330,10 +331,11 @@ class ScheduleMonitor:
             return "changed" if changes else "baseline" if old is None else "unchanged"
 
     async def backfill_widget_weeks(self, state: dict) -> None:
-        """Recover the widget data from the accepted PDF without advancing the daily check."""
+        """Recover interactive schedule data without advancing the daily check."""
+        bot_data = self.application.bot_data
         if (
             self.widget_backfill_attempted
-            or self.application.bot_data.get("schedule_widget_cards") is None
+            or (SCHEDULE_STATE_KEY not in bot_data and "schedule_widget_cards" not in bot_data)
             or state.get("widget_weeks") is not None
             or not state.get("pdf_hash")
         ):
