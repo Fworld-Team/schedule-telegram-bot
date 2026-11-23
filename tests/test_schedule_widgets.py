@@ -14,7 +14,7 @@ from telegram.error import BadRequest, EndPointNotFound, TimedOut
 
 from schedule_bot.calendar import WeekKind
 from schedule_bot.admin import clear_week_override, set_week_kind
-from schedule_bot.schedule_monitor import ScheduleMonitor
+from schedule_bot.schedule_monitor import SCHEDULE_STATE_KEY, ScheduleMonitor
 from schedule_bot.schedule_widgets import ScheduleWidgetCards
 from schedule_bot.storage import BotStorage
 from tests.test_schedule_monitor import PDF_URL, sample_groups
@@ -151,7 +151,7 @@ class ScheduleWidgetTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([state["kind"] for state in states], [corrected_kind.value, original_kind.value])
         self.assertEqual([state["patches"] for state in states], [[], []])
 
-    async def test_backfills_legacy_cache_before_due_without_advancing_daily_check(self):
+    async def test_backfills_legacy_cache_with_native_widgets_disabled(self):
         fixture = Path(__file__).parent / "fixtures/timacad"
         pdf = (fixture / "schedule.pdf").read_bytes()
         requests = []
@@ -164,7 +164,7 @@ class ScheduleWidgetTests(unittest.IsolatedAsyncioTestCase):
 
         app = SimpleNamespace(bot=self.bot, bot_data={
             "settings": self.settings, "storage": self.storage,
-            "schedule_widget_cards": self.cards, "active": {12},
+            SCHEDULE_STATE_KEY: self.cards.store, "active": {12},
         })
         async with httpx.AsyncClient(transport=httpx.MockTransport(university)) as client:
             monitor = ScheduleMonitor(app, "active", client)
@@ -187,14 +187,12 @@ class ScheduleWidgetTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(len(requests), 1)
             self.bot.do_api_request.assert_not_awaited()
             self.bot.send_message.assert_not_awaited()
-            self.bot.do_api_request.return_value = {"message_id": 54}
-            self.assertTrue(await self.cards.open(12))
 
             due = datetime(2026, 11, 9, 6, tzinfo=timezone.utc)
             self.assertEqual(await restarted.check(due), "unchanged")
             self.assertEqual(len(requests), 3)
             self.assertEqual(monitor.store.load()["last_successful_check"], "2026-11-09")
-            self.bot.do_api_request.assert_awaited_once()
+            self.bot.do_api_request.assert_not_awaited()
             self.bot.send_message.assert_not_awaited()
 
     async def test_backfill_never_adopts_a_changed_pdf_or_retries_on_every_tick(self):
