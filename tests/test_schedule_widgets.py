@@ -44,6 +44,26 @@ class ScheduleWidgetTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(await self.cards.open(12))
         self.bot.do_api_request.assert_not_awaited()
 
+    async def test_rejected_widget_logs_telegram_description_and_allows_fallback(self):
+        error = BadRequest("Bad Request: INPUT_MEDIA_WIDGET_TOO_LARGE")
+        self.bot.do_api_request.side_effect = error
+        with patch.object(self.cards.store, "load", return_value={"widget_weeks": self.weekly}), \
+                self.assertLogs("schedule_bot.schedule_widgets", level="WARNING") as logs:
+            self.assertFalse(await self.cards.open(12))
+        self.assertIn("sendwidget rejected: input_media_widget_too_large", logs.output[0].lower())
+        self.assertIsNone(self.storage.schedule_widget_card(12))
+        self.bot.do_api_request.assert_awaited_once()
+
+    async def test_unparseable_response_body_is_not_logged(self):
+        error = BadRequest("Bad Request (400). Parsing the server response failed: raw body")
+        error.__cause__ = ValueError("Invalid JSON")
+        self.bot.do_api_request.side_effect = error
+        with patch.object(self.cards.store, "load", return_value={"widget_weeks": self.weekly}), \
+                self.assertLogs("schedule_bot.schedule_widgets", level="WARNING") as logs:
+            self.assertFalse(await self.cards.open(12))
+        self.assertIn("unparseable HTTP 400", logs.output[0])
+        self.assertNotIn("raw body", logs.output[0])
+
     async def test_definitive_edit_failures_create_one_replacement(self):
         for error in (BadRequest("message to edit not found"), EndPointNotFound("edit unavailable")):
             with self.subTest(error=error):
